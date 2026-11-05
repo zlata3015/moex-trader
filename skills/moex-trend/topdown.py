@@ -164,6 +164,8 @@ def cmd_scan(a):
         except (C.NetError, FileNotFoundError) as e:
             sys.stderr.write("%s: %s\n" % (s, e))
             continue
+        if not r["atr"]:
+            continue   # истории меньше, чем нужно для ATR: новая бумага, тренд не определить
         if r["atr"] / r["price"] < 0.004:
             continue   # фонды денежного рынка и облигационные фонды: почти без колебаний, это не тренд, а начисление процентов
         st = r["states"]

@@ -143,7 +143,7 @@ def cmd_place(a):
         if d:
             C.die("Учёт расходится со счётом: %s. Новые заявки запрещены, пока не сойдётся: broker.py reconcile." % "; ".join(d))
     ins = tinvest.instrument(o["symbol"], o["kind"])
-    price = C.round_step(o["entry"], ins.get("minstep") or (o.get("spec") or {}).get("minstep") or 0.01)
+    price = order_price(o, ins)
     # Ключ заявки выводится из её отпечатка: повторная отправка той же заявки у брокера не задублируется.
     oid = str(uuid.uuid5(uuid.NAMESPACE_URL, "moex-trader:" + o["fingerprint"]))
     log_event(s, {"type": "sending", "fingerprint": o["fingerprint"], "symbol": o["symbol"], "order_id": oid}, now)
@@ -165,6 +165,13 @@ def cmd_place(a):
         r.get("lotsExecuted", "?"), r.get("lotsRequested", o["lots"])))
     if not o.get("closing"):
         print("После исполнения выставьте защиту: broker.py protect --index %d" % a.index)
+
+
+def order_price(o, ins):
+    """Цена заявки по шагу инструмента. У рыночного закрытия цены нет."""
+    if o.get("entry") is None:
+        return None
+    return C.round_step(o["entry"], ins.get("minstep") or (o.get("spec") or {}).get("minstep") or 0.01)
 
 
 def send_unknown(s, fp):

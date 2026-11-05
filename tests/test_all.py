@@ -650,6 +650,42 @@ class TestProtection(unittest.TestCase):
             run("moex-broker/broker.py", "resume", env=env)
             self.assertFalse(os.path.exists(os.path.join(tmp, "HALT")))
 
+    def test_tbank_certificate_scope(self):
+        import hashlib
+        import ssl
+        with open(C.RU_CA_FILE) as f:
+            der = ssl.PEM_cert_to_DER_cert(f.read())
+        self.assertEqual(hashlib.sha256(der).hexdigest(), "d26d2d0231b7c39f92cc738512ba54103519e4405d68b5bd703e9788ca8ecf31")
+        self.assertIsNone(C.ssl_context("https://iss.moex.com/iss/index.json"))
+        self.assertIsNone(C.ssl_context("https://tbank.ru.evil.example/rest/"))
+        ctx = C.ssl_context("https://sandbox-invest-public-api.tbank.ru/rest/")
+        self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(ctx.check_hostname)
+
+    def test_paper_reads_go_through_sandbox(self):
+        import tinvest
+        seen = []
+        old = tinvest.call
+        tinvest.call = lambda service, method, body=None, sandbox=False: seen.append(sandbox) or {}
+        with tempfile.TemporaryDirectory() as tmp:
+            env_old = os.environ.get("TRADER_DIR")
+            os.environ["TRADER_DIR"] = tmp
+            try:
+                tinvest.read("InstrumentsService", "FindInstrument", {})
+                with open(os.path.join(tmp, "config.json"), "w") as f:
+                    json.dump({"paper": False}, f)
+                tinvest.read("InstrumentsService", "FindInstrument", {})
+            finally:
+                tinvest.call = old
+                os.environ.pop("TRADER_DIR") if env_old is None else os.environ.__setitem__("TRADER_DIR", env_old)
+        self.assertEqual(seen, [True, False])
+
+    def test_market_close_has_no_price(self):
+        sys.path.insert(0, os.path.join(SK, "moex-broker"))
+        import broker
+        self.assertIsNone(broker.order_price({"entry": None, "closing": True}, {"minstep": 0.01}))
+        self.assertEqual(broker.order_price({"entry": 291.913}, {"minstep": 0.01}), 291.91)
+
     def test_unknown_send_blocks_repeat(self):
         sys.path.insert(0, os.path.join(SK, "moex-broker"))
         import broker

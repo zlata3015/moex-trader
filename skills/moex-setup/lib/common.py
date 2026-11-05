@@ -5,6 +5,7 @@
 import hashlib
 import json
 import os
+import ssl
 import sys
 import time
 import urllib.error
@@ -224,6 +225,21 @@ NET_HINT = (
 )
 
 
+# Сертификаты Т-Банка выпущены центром Минцифры. Ему доверяем только для этих адресов, проверка не отключается.
+RU_CA_HOSTS = (".tbank.ru", ".tinkoff.ru")
+RU_CA_FILE = os.path.join(LIB_DIR, "certs", "russian_trusted_root_ca.pem")
+
+
+def ssl_context(url):
+    """Контекст TLS: для адресов Т-Банка системные корни плюс корень Минцифры, для остальных обычный."""
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if not host.endswith(RU_CA_HOSTS):
+        return None
+    ctx = ssl.create_default_context()
+    ctx.load_verify_locations(cafile=RU_CA_FILE)
+    return ctx
+
+
 def http(url, params=None, data=None, headers=None, timeout=25, retries=4, method=None):
     fx = os.environ.get("MOEX_TRADER_FIXTURES")
     if fx:
@@ -245,7 +261,7 @@ def http(url, params=None, data=None, headers=None, timeout=25, retries=4, metho
     for attempt in range(retries + 1):
         try:
             req = urllib.request.Request(url, data=body, headers=h, method=method)
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with urllib.request.urlopen(req, timeout=timeout, context=ssl_context(url)) as r:
                 return r.read()
         except urllib.error.HTTPError as e:
             payload = e.read()

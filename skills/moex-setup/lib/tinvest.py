@@ -65,6 +65,11 @@ def call(service, method, body=None, sandbox=False):
     raise last
 
 
+def read(service, method, body=None):
+    """Справочники и цены: в режиме paper идут через песочницу, там работает токен песочницы."""
+    return call(service, method, body, sandbox=bool(C.config().get("paper")))
+
+
 # ---------------------------------------------------------------- деньги
 
 def q2f(q):
@@ -100,14 +105,14 @@ def instrument(symbol, kind=None):
     body = {"query": symbol, "apiTradeAvailableFlag": True}
     if kind in KIND_ENUM:
         body["instrumentKind"] = KIND_ENUM[kind]
-    found = call("InstrumentsService", "FindInstrument", body).get("instruments", [])
+    found = read("InstrumentsService", "FindInstrument", body).get("instruments", [])
     exact = [i for i in found if (i.get("ticker") or "").upper() == symbol.upper()]
     pref = CLASS_FOR_KIND.get(kind or "shares", [])
     exact.sort(key=lambda i: (pref.index(i["classCode"]) if i.get("classCode") in pref else 99))
     if not exact:
         raise C.NetError("Т-Инвестиции не нашли %s для торговли через API" % symbol)
     i = exact[0]
-    full = call("InstrumentsService", "GetInstrumentBy",
+    full = read("InstrumentsService", "GetInstrumentBy",
                 {"idType": "INSTRUMENT_ID_TYPE_UID", "id": i["uid"]}).get("instrument", {})
     out = {"uid": i["uid"], "figi": i.get("figi"), "ticker": i.get("ticker"), "classCode": i.get("classCode"),
            "name": i.get("name"), "lot": int(full.get("lot") or 1), "minstep": q2f(full.get("minPriceIncrement")),
@@ -132,7 +137,7 @@ def candles(symbol, tf, start, end, kind=None):
     out, cur = [], start
     while cur < end:
         nxt = min(end, cur + timedelta(days=chunk))
-        js = call("MarketDataService", "GetCandles",
+        js = read("MarketDataService", "GetCandles",
                   {"instrumentId": ins["uid"], "from": _utc(cur), "to": _utc(nxt), "interval": enum})
         for c in js.get("candles", []):
             out.append({"t": C.fmt_dt(_to_msk(c["time"])), "o": q2f(c["open"]), "h": q2f(c["high"]),
@@ -149,7 +154,7 @@ def candles(symbol, tf, start, end, kind=None):
 
 def last_price(symbol, kind=None):
     ins = instrument(symbol, kind)
-    js = call("MarketDataService", "GetLastPrices", {"instrumentId": [ins["uid"]]})
+    js = read("MarketDataService", "GetLastPrices", {"instrumentId": [ins["uid"]]})
     lp = js.get("lastPrices") or []
     return q2f(lp[0].get("price")) if lp else None
 
