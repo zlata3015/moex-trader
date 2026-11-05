@@ -452,13 +452,39 @@ def sitenews(limit=50):
     return table(js, "sitenews")
 
 
-def adjust_splits(bars, divs=None, threshold=2.5):
+# Дробления, которые не видны по скачку открытия: первая сделка дня прошла по старой цене.
+KNOWN_SPLITS = {"BELU": [("2024-08-22", 1.0 / 8)]}  # Novabev: 7 бесплатных акций на 1, стало 8
+
+
+def _scale_divs(divs, date, f):
+    """Дивиденды Smart-Lab уже приведены к текущему числу акций, поэтому не пересчитываются."""
+    for d in divs:
+        if d.get("value") and d.get("source") != "smart-lab" and (d.get("date") or "") < date:
+            d["value"] *= f
+
+
+def adjust_splits(bars, divs=None, threshold=2.5, symbol=None):
     """Учёт дроблений и консолидаций: скачок открытия к прошлому закрытию больше чем в threshold раз
     (на Мосбирже за день такого не бывает) считается сменой номинала; вся история до него пересчитывается.
-    divs (список {date, value}) пересчитываются тем же коэффициентом. -> (bars, divs, [(дата, коэффициент)])."""
+    Дробления из KNOWN_SPLITS применяются по символу, вместе с ценами первой сделки в сам день дробления.
+    divs (список {date, value}) пересчитываются тем же коэффициентом, кроме значений со Smart-Lab, где дробление
+    уже учтено. -> (bars, divs, [(дата, коэффициент)])."""
     bars = [dict(b) for b in bars]
     divs = [dict(d) for d in (divs or [])]
     events = []
+    for date, f in KNOWN_SPLITS.get(symbol, []):
+        if not any(b["t"][:10] < date for b in bars):
+            continue
+        for b in bars:
+            if b["t"][:10] < date:
+                for k in ("o", "h", "l", "c"):
+                    b[k] *= f
+                b["v"] = b.get("v", 0) / f
+            elif b["t"][:10] == date:
+                b["o"] *= f
+                b["h"] *= f
+        _scale_divs(divs, date, f)
+        events.append((date, f))
     for i in range(len(bars) - 1, 0, -1):
         prev, cur = bars[i - 1]["c"], bars[i]["o"]
         if prev <= 0 or cur <= 0:
@@ -471,9 +497,7 @@ def adjust_splits(bars, divs=None, threshold=2.5):
                 for k in ("o", "h", "l", "c"):
                     b[k] *= f
                 b["v"] = b.get("v", 0) / f
-            for d in divs:
-                if d.get("value") and (d.get("date") or "") < date:
-                    d["value"] *= f
+            _scale_divs(divs, date, f)
             events.append((date, f))
     return bars, divs, events
 

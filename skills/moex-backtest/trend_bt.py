@@ -80,9 +80,9 @@ def load(sym, a):
         except C.NetError:
             monthly = None
         spec = moex.spec(sym)
-    daily, divs, ev = moex.adjust_splits(daily, load_divs(sym, a))
+    daily, divs, ev = moex.adjust_splits(daily, load_divs(sym, a), symbol=sym)
     if monthly:
-        monthly, _, _ = moex.adjust_splits(monthly)
+        monthly, _, _ = moex.adjust_splits(monthly, symbol=sym)
     if getattr(a, "since", None):
         pass
     spec["divs"] = divs

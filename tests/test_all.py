@@ -844,5 +844,29 @@ def _write_tinvest_fixtures():
     w(sb, "SandboxService_GetSandboxAccounts", {"accounts": [{"id": "sb-123", "name": "moex-trader"}]})
 
 
+class TestSplits(unittest.TestCase):
+    @staticmethod
+    def _bars(prices):
+        return [{"t": d + " 00:00", "o": o, "h": h, "l": l, "c": c, "v": 100} for d, o, h, l, c in prices]
+
+    def test_smartlab_divs_not_scaled_twice(self):
+        bars = self._bars([("2024-07-12", 100, 101, 99, 100), ("2024-07-15", 1, 1.1, .9, 1)])
+        divs = [{"date": "2023-05-10", "value": 2.5, "source": "smart-lab"}, {"date": "2023-05-10", "value": 2.5}]
+        _, out, ev = moex.adjust_splits(bars, divs)
+        self.assertEqual(len(ev), 1)
+        self.assertEqual(out[0]["value"], 2.5)
+        self.assertAlmostEqual(out[1]["value"], .025)
+
+    def test_known_split_with_old_open(self):
+        bars = self._bars([("2024-08-21", 4700, 4720, 4650, 4680), ("2024-08-22", 4223, 4223, 651, 714),
+                           ("2024-08-23", 713, 719, 652, 687)])
+        out, _, ev = moex.adjust_splits(bars, symbol="BELU")
+        self.assertEqual(ev, [("2024-08-22", 1.0 / 8)])
+        self.assertAlmostEqual(out[0]["c"], 585)
+        self.assertAlmostEqual(out[1]["o"], 527.875)
+        self.assertEqual(out[1]["l"], 651)
+        self.assertEqual(out[2]["o"], 713)
+
+
 if __name__ == "__main__":
     unittest.main()
