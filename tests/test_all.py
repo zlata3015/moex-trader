@@ -460,6 +460,84 @@ class TestRiskRules(unittest.TestCase):
         self.assertEqual(_load(os.path.join(tmp, "portfolio.json"))["positions"]["SBER"]["stop"], 436)
 
 
+class TestHypotheses(unittest.TestCase):
+    def setUp(self):
+        import hypo
+        self.H = hypo
+        self.cal = ["2020-01-%02d" % d for d in range(1, 11)]
+        self.key = [("2020-01-01", 11.0)]
+
+    def good(self, **kw):
+        m = {"premium": 3.0, "p": 0.001, "periods": {"a": 1, "b": 2, "c": 1}, "premium_late": 1.0, "premium_cost2": 2.0,
+             "legs": 6, "legs_won": 5, "switches": 12, "max_dd": -5.0, "hold_dd": -30.0}
+        m.update(kw)
+        return m
+
+    def test_signal_trades_next_close(self):
+        pos = self.H.positions(self.cal, [("2020-01-03", 1.0)])
+        self.assertEqual(pos[:5], [0.0, 0.0, 0.0, 0.0, 1.0])  # сигнал 3-го, покупка закрытием 4-го, доход с 5-го
+
+    def test_money_index_daily_accrual(self):
+        m = self.H.money_index(self.cal, self.key, spread=1.0)
+        self.assertAlmostEqual(m[1], 1 + 0.10 / 365, places=9)
+
+    def test_cost_on_switch(self):
+        asset = [100.0] * 10
+        money = [1.0] * 10
+        pos = [0, 0, 1, 1, 1, 0, 0, 0, 0, 0]
+        r = self.H.daily_returns(self.cal, asset, money, pos, 0.001)
+        self.assertAlmostEqual(sum(r), -0.002)
+
+    def test_verdict_confirmed_needs_family_correction(self):
+        self.assertEqual(self.H.verdict(self.good(), 1)[0], "confirmed")
+        self.assertEqual(self.H.verdict(self.good(p=0.01), 22)[0], "candidate")
+
+    def test_verdict_frequent_needs_100_trades(self):
+        self.assertEqual(self.H.verdict(self.good(switches=120), 1, "frequent")[0], "candidate")
+        self.assertEqual(self.H.verdict(self.good(switches=240), 1, "frequent")[0], "confirmed")
+
+    def test_verdict_rejects_and_risk_filter(self):
+        self.assertEqual(self.H.verdict(self.good(premium=-0.5, max_dd=-25.0), 1)[0], "rejected")
+        self.assertEqual(self.H.verdict(self.good(premium=0.5, p=0.4), 1)[0], "risk_filter")
+        self.assertEqual(self.H.verdict(self.good(premium_late=-1.0, max_dd=-25.0), 1)[0], "rejected")
+
+    def test_registry_rule_is_frozen_and_gate(self):
+        reg = {"hypotheses": []}
+        self.H.add(reg, "X1", "утверждение", "f", "правило")
+        with self.assertRaises(ValueError):
+            self.H.add(reg, "X1", "другое", "f", "другое правило")
+        with self.assertRaises(ValueError):
+            self.H.add(reg, "X2", "без правила", "f", " ")
+        self.assertEqual(self.H.tradable(reg), [])
+        self.H.record(reg, "X1", self.good(premium=-1.0, max_dd=-25.0))
+        self.assertEqual(reg["hypotheses"][0]["status"], "rejected")
+        self.assertEqual(self.H.tradable(reg), [])
+        self.assertEqual(self.H.family_size(reg, "f"), 1)
+        with self.assertRaises(ValueError):
+            self.H.promote(reg, "X1", "sandbox")
+
+    def test_evaluate_on_synthetic_series(self):
+        cal = []
+        for y in range(2015, 2019):
+            for m in range(1, 13):
+                for d in (5, 15, 25):
+                    cal.append("%d-%02d-%02d" % (y, m, d))
+        asset = [100 * 1.001 ** i for i in range(len(cal))]
+        sig = [(cal[0], 1.0)]
+        r = self.H.evaluate(cal, asset, [(cal[0], 1.0)], sig, cal[0], [("all", "2015", "2018")], cost=0)
+        self.assertGreater(r["premium"], 0)
+        self.assertEqual(r["legs"], 1)
+        self.assertEqual(r["max_dd"], 0)
+        self.assertEqual(r["hold_dd"], 0)
+
+    def test_registry_file_valid(self):
+        reg = self.H.load(os.path.join(SK, "moex-hypotheses", "registry.json"))
+        self.assertEqual(self.H.tradable(reg), [])
+        for h in reg["hypotheses"]:
+            self.assertIn(h["status"], self.H.VERDICTS)
+            self.assertTrue(h["rule"])
+
+
 class TestScripts(unittest.TestCase):
     def setUp(self):
         self.env = {"TRADER_DIR": tempfile.mkdtemp()}
