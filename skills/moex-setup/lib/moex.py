@@ -377,6 +377,55 @@ def smartlab_dividends(symbol):
     return out
 
 
+FINANCE_TICKER = {"SBERP": "SBER", "TATNP": "TATN", "SNGSP": "SNGS", "RTKMP": "RTKM", "BANEP": "BANE", "LSNGP": "LSNG",
+                  "MTLRP": "MTLR", "CNTLP": "CNTL", "MGTSP": "MGTS", "LNZLP": "LNZL", "KZOSP": "KZOS"}
+
+
+def parse_year_series(text):
+    """Годовой ряд со страницы показателя smart-lab: {'2024': 10.5, ...} без строки LTM."""
+    import re
+    m = re.search(r"aYearData\s*=\s*\{\s*'diagram'\s*:\s*\{.*?\"categories\":\[(.*?)\],\"data\":\[(.*?)\]\s*[,}]", text, re.S)
+    if not m:
+        return {}
+    cats = json.loads("[" + m.group(1) + "]")
+    vals = re.findall(r'\{"y":(null|-?[\d.eE+-]+)', m.group(2))
+    return {c: (None if v == "null" else float(v)) for c, v in zip(cats, vals) if c != "LTM"}
+
+
+def smartlab_finance(symbol):
+    """Годовая МСФО со smart-lab: прибыль, операционный поток, чистый долг, EBITDA. -> {показатель: {год: значение}}."""
+    sym = FINANCE_TICKER.get(symbol.upper(), symbol.upper())
+    out = {}
+    for k in ("net_income", "ocf", "net_debt", "ebitda"):
+        raw = C.http("https://smart-lab.ru/q/%s/MSFO/%s/" % (sym, k), headers={"User-Agent": "Mozilla/5.0"}, retries=1)
+        out[k] = parse_year_series(raw.decode("utf-8", "replace"))
+    return out
+
+
+def finance_warnings(f):
+    """Предупреждения по последнему году с прибылью. Это сведения для решения, а не запрет сделки."""
+    years = sorted(y for y, v in (f.get("net_income") or {}).items() if v is not None)
+    if not years:
+        return {"year": None, "warnings": ["отчётности МСФО нет, проверьте РСБУ и новости компании"]}
+    y = years[-1]
+    ni = f["net_income"][y]
+    pv = f["net_income"].get(str(int(y) - 1))
+    nd, e, o = (f.get(k, {}).get(y) for k in ("net_debt", "ebitda", "ocf"))
+    w = []
+    if ni <= 0:
+        w.append("чистый убыток за %s год" % y)
+    if pv is not None and ni < pv:
+        w.append("прибыль снизилась к прошлому году")
+    if e is not None and e <= 0:
+        w.append("EBITDA отрицательная")
+    elif nd is not None and e and nd / e >= 3:
+        w.append("чистый долг/EBITDA %.1f, это 3 и выше" % (nd / e))
+    if o is not None and o <= 0:
+        w.append("операционный денежный поток отрицательный")
+    return {"year": y, "net_income": ni, "debt_ebitda": nd / e if nd is not None and e and e > 0 else None,
+            "ocf": o, "warnings": w}
+
+
 def next_dividend(symbol, today=None):
     today = (today or C.now_msk()).strftime("%Y-%m-%d")
     try:

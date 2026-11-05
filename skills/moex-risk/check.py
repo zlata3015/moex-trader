@@ -170,7 +170,7 @@ def check(o, cfg, now, st, offline=False):
                 monthly = moex.candles(o["symbol"], "1M", days=3650, end=now, kind=k, source="iss")
             except C.NetError:
                 monthly = None
-            td = trend.top_down(daily, monthly)
+            td = trend.top_down(daily, monthly, require=trend.STOCK_REQUIRE if k == "shares" else ("1w", "1d"))
             want = o["direction"]
             got = td["verdict"]["direction"]
             add(got == want, "тренд", "месяц %s, неделя %s, день %s — %s" % (

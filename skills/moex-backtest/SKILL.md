@@ -26,6 +26,8 @@ python3 "${CLAUDE_SKILL_DIR}/backtest.py" trend-universe --short
 python3 "${CLAUDE_SKILL_DIR}/backtest.py" trend-universe --files-dir ~/moex   # по выгрузкам SYM_D.csv / SYM_M.csv / IMOEX_D.csv
 python3 "${CLAUDE_SKILL_DIR}/backtest.py" trend-universe --since 2019-01-01 --by-year --regime
 python3 "${CLAUDE_SKILL_DIR}/backtest.py" trend-portfolio --since 2019-01-01 --regime --capital 100000 --risk 1
+python3 "${CLAUDE_SKILL_DIR}/backtest.py" trend-compare --files-dir ~/moex --since 2019-01-03   # откаты к разным EMA, пробой, случайный вход
+python3 "${CLAUDE_SKILL_DIR}/backtest.py" trend-universe --entry-ema 20 --regime   # контроль: откат к EMA20
 #   один счёт по всем бумагам, лимиты позиций, свободные деньги в фонде денежного рынка; сравнение с фондом и индексом
 ```
 Для стратегии тренда сначала смотрите \`trend-universe\` с одними параметрами для всех бумаг — это честнее оптимизации. Сделка, открытая на конец данных, помечена «открыта» и посчитана по последней цене.

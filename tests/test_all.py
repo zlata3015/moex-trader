@@ -284,6 +284,58 @@ class TestTrend(unittest.TestCase):
         closed = [t for t in tr_cut if t["outcome"] != "открыта"]
         self.assertEqual([t["date"] for t in closed], [t["date"] for t in tr[:len(closed)]])
 
+    def test_pullback_uses_ema10_and_confirm_never_blocks(self):
+        import ta
+        import trend
+        bars = self._series(0.002, 300)
+        i = 250
+        c = [b["c"] for b in bars[:i + 1]]
+        e = ta.ema(c, 10)[-1]
+        a = ta.atr([b["h"] for b in bars[:i + 1]], [b["l"] for b in bars[:i + 1]], c)[-1]
+        bars[i] = dict(bars[i], o=e, l=e - 0.1 * a, h=e + a, c=e + 0.5 * a)
+        ctx = trend.signal_context(bars)
+        s = trend.entry_signal(bars, "long", i, ctx=ctx)
+        self.assertEqual(s["setup"], "trend-pullback")
+        self.assertEqual(s["ema"], 10)
+        ctx2 = dict(ctx, confirm=[10 ** 9] * len(bars))   # EMA20 против сигнала
+        s2 = trend.entry_signal(bars, "long", i, ctx=ctx2)
+        self.assertEqual(s2["setup"], "trend-pullback")
+        self.assertFalse(s2["confirm"])
+        self.assertIsNone(trend.entry_signal(bars, "long", i, ctx=ctx, setups=("trend-breakout",)))
+
+    def test_stock_rule_ignores_day_but_short_needs_it(self):
+        import trend
+        st = {"1M": {"dir": "flat"}, "1w": {"dir": "up"}, "1d": {"dir": "flat"}}
+        self.assertEqual(trend.combine(st, require=trend.STOCK_REQUIRE)["direction"], "long")
+        self.assertIsNone(trend.combine(st)["direction"])
+        st["1M"]["dir"] = "down"
+        self.assertIsNone(trend.combine(st, require=trend.STOCK_REQUIRE)["direction"])
+
+    def test_turnover_and_random_control(self):
+        import trend
+        bars = self._series(0.002)
+        spec = {"kind": "shares", "minstep": 0.01, "lot": 1}
+        thin = [dict(b, val=1000.0) for b in bars]
+        self.assertEqual(trend.backtest(thin, spec, dict(C.DEFAULT_CONFIG), min_turnover=1e8), [])
+        tr = trend.backtest(bars, spec, dict(C.DEFAULT_CONFIG), random_p=0.5, seed=3)
+        self.assertTrue(tr and all(t["setup"] == "trend-random" for t in tr))
+
+    def test_finance_is_warning_only(self):
+        import moex
+        page = """var aYearData = {
+            'diagram' : {"categories":["2023","2024","LTM"],"data":[{"y":10.5,"color":"#e"},{"y":-2,"color":"#e"},{"y":1,"color":"#e"}],"field":"x"},
+            'change_diagram' : {}};"""
+        self.assertEqual(moex.parse_year_series(page), {"2023": 10.5, "2024": -2.0})
+        f = moex.finance_warnings({"net_income": {"2023": 10.0, "2024": -2.0}, "net_debt": {"2024": 40.0},
+                                   "ebitda": {"2024": 10.0}, "ocf": {"2024": -1.0}})
+        text = " ".join(f["warnings"])
+        self.assertIn("убыток", text)
+        self.assertIn("4.0", text)
+        self.assertIn("денежный поток", text)
+        self.assertEqual(moex.finance_warnings({})["year"], None)
+        ok = moex.finance_warnings({"net_income": {"2024": 5.0}, "net_debt": {"2024": 1.0}, "ebitda": {"2024": 10.0}, "ocf": {"2024": 2.0}})
+        self.assertEqual(ok["warnings"], [])
+
     def test_risk_blocks_against_trend(self):
         tmp = tempfile.mkdtemp()
         env = {"TRADER_DIR": tmp}

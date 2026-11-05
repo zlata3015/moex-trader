@@ -237,6 +237,8 @@ def main():
     p = sub.add_parser("trend-universe"); T.add_args(p, sym=False); p.set_defaults(fn=T.cmd_universe)
     p = sub.add_parser("trend-portfolio", help="один счёт по всем бумагам + фонд денежного рынка")
     T.add_args(p, sym=False); p.set_defaults(fn=T.cmd_portfolio)
+    p = sub.add_parser("trend-compare", help="откаты к разным EMA, пробой и случайный вход")
+    T.add_args(p, sym=False); p.set_defaults(fn=T.cmd_compare)
     a = ap.parse_args()
     if getattr(a, "strategy", None) == "swing" and a.days == 120:
         a.days = 1500

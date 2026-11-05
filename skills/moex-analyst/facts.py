@@ -85,6 +85,13 @@ def main():
         print("  в индексах: " + ", ".join(out["indices"]))
     t = out["ta_daily"]
     print("  ТА по дневкам: %s (%+d), тренд %s, RSI %s" % (t["verdict"], t["score"] or 0, t["trend"], C.num(t["rsi"], 0)))
+    try:
+        f = moex.finance_warnings(moex.smartlab_finance(a.symbol))
+    except C.NetError:
+        f = {"year": None, "warnings": ["годовую отчётность получить не удалось"]}
+    out["finance"] = f
+    print("  Финансы (предупреждение, не запрет)%s: %s" % (" за %s год" % f["year"] if f["year"] else "",
+                                                          "; ".join(f["warnings"]) or "явных тревожных признаков нет"))
     C.save_json(C.tpath("analyst", "%s.json" % a.symbol), out)
 
 

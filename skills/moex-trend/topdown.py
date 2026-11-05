@@ -45,7 +45,7 @@ def load(sym, a):
 def analyze(sym, a):
     cfg = C.config()
     daily, monthly, spec = load(sym, a)
-    td = trend.top_down(daily, monthly)
+    td = trend.top_down(daily, monthly, require=trend.STOCK_REQUIRE if spec.get("kind", "shares") == "shares" else ("1w", "1d"))
     v = td["verdict"]
     d = v["direction"]
     allowed = d == "long" or (d == "short" and (cfg["allow_short"] or a.short))
@@ -62,7 +62,22 @@ def analyze(sym, a):
     bt = (C.load_json(C.tpath("backtest", "summary.json"), {}) or {}).get("%s|trend" % sym)
     if bt:
         res["backtest"] = bt
+    if not a.files_dir and getattr(a, "cmd", "") == "analyze" and d and spec.get("kind", "shares") == "shares":
+        res["finance"] = finance_check(sym, a)
     return res
+
+
+def finance_check(sym, a):
+    """Финансы и дивиденды: только предупреждение, на вердикт не влияет."""
+    try:
+        f = moex.finance_warnings(moex.smartlab_finance(sym))
+    except C.NetError:
+        f = {"year": None, "warnings": ["отчётность получить не удалось, проверьте в moex-analyst"]}
+    try:
+        f["next_dividend"] = moex.next_dividend(sym, C.now_msk(a.now))
+    except C.NetError:
+        f["next_dividend"] = None
+    return f
 
 
 def show(r):
@@ -81,13 +96,23 @@ def show(r):
         s = r["signal"]
         p = r["proposal"]
         if s:
-            print("Сигнал сегодня: %s — %s %s" % ({"trend-pullback": "откат к EMA20 и разворот", "trend-breakout": "пробой 20-дневного экстремума"}[s["setup"]],
+            print("Сигнал сегодня: %s — %s %s" % ({"trend-pullback": "откат к EMA10 и разворот", "trend-breakout": "пробой 20-дневного экстремума"}[s["setup"]],
                                                "уровень", C.px(s["level"])))
+            print("Подтверждение EMA20: %s (сигнал этим не отменяется)" % ("да, цена за EMA20" if s["confirm"] else "нет, цена по другую сторону EMA20"))
             print("Предложение: вход около %s (завтра на открытии или сейчас), стоп %s (%s ATR, −%s), без цели — "
                   "подтягиваемый стоп %s ATR, держим, пока тренд жив" % (C.px(p["entry"]), C.px(p["stop"]), C.num(2, 0),
                                                                         C.pct(p["risk_pct"]), C.num(p["trail"], 1)))
         else:
-            print("Сигнала сегодня нет: тренд есть, но точки входа нет (ждём отката к EMA20 или пробоя). Не догоняем цену.")
+            print("Сигнала сегодня нет: тренд есть, но точки входа нет (ждём отката к EMA10 или пробоя). Не догоняем цену.")
+    f = r.get("finance")
+    if f:
+        print("Финансы и события (предупреждение, не запрет; решает пользователь)%s:" % (" за %s год" % f["year"] if f["year"] else ""))
+        for w in f["warnings"] or ["явных тревожных признаков в годовой отчётности нет"]:
+            print("  · " + w)
+        nd = f.get("next_dividend")
+        if nd:
+            print("  · ближайшая дивидендная отсечка %s, %s на акцию" % (nd["date"], C.rub(nd["value"])))
+        print("  · дату ближайшей отчётности проверьте в moex-news")
     bt = r.get("backtest")
     if bt:
         st = bt.get("oos") if bt.get("oos") and bt["oos"].get("trades", 0) >= 5 else bt["stats"]
@@ -104,7 +129,7 @@ def write_plan(r, a):
             "tf": "1d", "setup": (r["signal"] or {}).get("setup", "trend-manual"), "entry": p["entry"], "stop": p["stop"],
             "target": None, "risk_per_unit": abs(p["entry"] - p["stop"]), "reward_per_unit": None, "rr": None,
             "stop_rule": "atr:%s" % a.stop_atr, "target_rule": "none", "trail": p["trail"], "initial_stop": p["stop"],
-            "minstep": r["spec"].get("minstep"), "atr": r["atr"], "date": now.strftime("%Y-%m-%d"), "created": C.fmt_dt(now),
+            "minstep": r["spec"].get("minstep"), "atr": r["atr"], "confirm_ema20": (r["signal"] or {}).get("confirm"), "date": now.strftime("%Y-%m-%d"), "created": C.fmt_dt(now),
             "entry_time": C.fmt_dt(now), "flat_by": None, "max_hold_days": C.config().get("max_hold_days_position", 60),
             "nearest_resistance": None, "nearest_support": None,
             "trend": {k: r["states"][k]["dir"] for k in r["states"]}}
@@ -145,10 +170,11 @@ def cmd_scan(a):
         verdict = ("ПОКУПКА" if r["direction"] == "long" else "ШОРТ" if r["direction"] == "short" and r["allowed"]
                    else "вниз (шорты выкл.)" if r["direction"] == "short" else "—")
         sig = {"trend-pullback": "откат", "trend-breakout": "пробой"}.get((r["signal"] or {}).get("setup"), "")
-        rows.append([s, ARROW[st["1M"]["dir"]], ARROW[st["1w"]["dir"]], ARROW[st["1d"]["dir"]], verdict, sig or "нет", C.px(r["price"])])
+        conf = "" if not r["signal"] else "да" if r["signal"]["confirm"] else "нет"
+        rows.append([s, ARROW[st["1M"]["dir"]], ARROW[st["1w"]["dir"]], ARROW[st["1d"]["dir"]], verdict, sig or "нет", conf, C.px(r["price"])])
         if sig and r["allowed"]:
             ready.append(s)
-    print(C.table(rows, ["тикер", "месяц", "неделя", "день", "направление", "сигнал", "цена"]))
+    print(C.table(rows, ["тикер", "месяц", "неделя", "день", "направление", "сигнал", "EMA20", "цена"]))
     print("\nГотовы к входу по тренду: %s" % (", ".join(ready) if ready else "нет — это нормально, ждём сигналов"))
     try:
         idx = moex.candles("IMOEX", "1d", days=150, kind="index", source="iss") if not a.files_dir else \

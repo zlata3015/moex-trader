@@ -12,6 +12,9 @@ import ta
 # параметры средних для каждого таймфрейма: (быстрая, медленная)
 EMA = {"1M": (6, 12), "1w": (10, 20), "1d": (20, 50), "4h": (20, 50), "1h": (20, 50), "10m": (20, 50), "5m": (20, 50)}
 DIR_RU = {"up": "вверх", "down": "вниз", "flat": "неясно"}
+ENTRY_EMA = 10                  # средняя для отката: выбрана проверкой ноября 2026
+CONFIRM_EMA = 20                # подтверждение: показывается и учитывается отдельно, сделку не запрещает
+STOCK_REQUIRE = ("1w",)         # покупка акций: неделя вверх, месяц не вниз; дневной тренд только для сведения
 
 
 # ---------------------------------------------------------------- пересборка
@@ -120,8 +123,9 @@ def combine(states, require=("1w", "1d"), veto=("1M",)):
             "why": "тренд %s на %s" % (DIR_RU[d], ", ".join(t for t in list(require) + list(veto) if t in states and states[t]["dir"] == d))}
 
 
-def top_down(daily, monthly=None, upto=None):
-    """Состояние трендов на дату upto (по умолчанию — последняя дневка). Недели и месяцы — только закрытые."""
+def top_down(daily, monthly=None, upto=None, require=("1w", "1d")):
+    """Состояние трендов на дату upto (по умолчанию — последняя дневка). Недели и месяцы — только закрытые.
+    require задаёт обязательные графики покупки; шорт всегда требует совпадения недели и дня."""
     if upto is not None:
         daily = [b for b in daily if b["t"][:10] <= upto]
     if not daily:
@@ -134,34 +138,51 @@ def top_down(daily, monthly=None, upto=None):
     else:
         months = [m for m in resample_period(daily, "M") if m["key"] < cur_m]
     st = {"1M": trend_state(months, "1M"), "1w": trend_state(weeks, "1w"), "1d": trend_state(daily, "1d")}
-    st["verdict"] = combine(st)
+    st["verdict"] = combine(st, require=require)
+    if st["verdict"]["direction"] == "short":
+        st["verdict"] = combine(st)
     return st
 
 
 # ---------------------------------------------------------------- сигналы входа в тренде
 
-def entry_signal(bars, direction, i=None, lookback=20):
-    """Сигнал на закрытии бара i в сторону тренда: откат к EMA20 или пробой N-барного экстремума."""
+def signal_context(bars, ema_n=ENTRY_EMA):
+    """Индикаторы для entry_signal, посчитанные заранее на всю историю (для бэктеста)."""
+    c = [b["c"] for b in bars]
+    return {"ema": ta.ema(c, ema_n), "confirm": ta.ema(c, CONFIRM_EMA),
+            "atr": ta.atr([b["h"] for b in bars], [b["l"] for b in bars], c)}
+
+
+def entry_signal(bars, direction, i=None, lookback=20, ema_n=ENTRY_EMA, ctx=None, setups=("trend-pullback", "trend-breakout")):
+    """Сигнал на закрытии бара i в сторону тренда: откат к растущей EMA10 или пробой N-барного экстремума.
+    Откат: средняя растёт за 5 баров, цена коснулась её с допуском 0,25 ATR, закрылась за средней, свеча по тренду.
+    EMA20 — подтверждение: в ответе поле confirm, на сигнал не влияет."""
     if i is None:
         i = len(bars) - 1
     if i < 50 or direction is None:
         return None
-    c = [b["c"] for b in bars[:i + 1]]
-    e20 = ta.ema(c, 20)[-1]
-    a = ta.atr([b["h"] for b in bars[:i + 1]], [b["l"] for b in bars[:i + 1]], c)[-1]
+    if ctx is None:
+        ctx = signal_context(bars[:i + 1], ema_n)
+    e, prev, a, ec = ctx["ema"][i], ctx["ema"][i - 5], ctx["atr"][i], ctx["confirm"][i]
+    if e is None or prev is None or a is None:
+        return None
     b = bars[i]
-    if direction == "long":
-        if b["l"] <= e20 + 0.25 * a and b["c"] > e20 and b["c"] > b["o"]:
-            return {"setup": "trend-pullback", "direction": "long", "price": b["c"], "atr": a, "level": e20, "t": b["t"]}
+    long_ = direction == "long"
+    pull = "trend-pullback" in setups
+    base = {"direction": direction, "price": b["c"], "atr": a, "t": b["t"], "ema": ema_n,
+            "confirm": ec is not None and (b["c"] > ec if long_ else b["c"] < ec)}
+    if long_:
+        if pull and e > prev and b["l"] <= e + 0.25 * a and b["c"] > e and b["c"] > b["o"]:
+            return dict(base, setup="trend-pullback", level=e)
         hh = max(x["h"] for x in bars[i - lookback:i])
         if b["c"] > hh:
-            return {"setup": "trend-breakout", "direction": "long", "price": b["c"], "atr": a, "level": hh, "t": b["t"]}
+            return dict(base, setup="trend-breakout", level=hh)
     else:
-        if b["h"] >= e20 - 0.25 * a and b["c"] < e20 and b["c"] < b["o"]:
-            return {"setup": "trend-pullback", "direction": "short", "price": b["c"], "atr": a, "level": e20, "t": b["t"]}
+        if pull and e < prev and b["h"] >= e - 0.25 * a and b["c"] < e and b["c"] < b["o"]:
+            return dict(base, setup="trend-pullback", level=e)
         ll = min(x["l"] for x in bars[i - lookback:i])
         if b["c"] < ll:
-            return {"setup": "trend-breakout", "direction": "short", "price": b["c"], "atr": a, "level": ll, "t": b["t"]}
+            return dict(base, setup="trend-breakout", level=ll)
     return None
 
 
@@ -225,13 +246,28 @@ def run_trailing(bars, start, entry, stop, long_, k=3.0, atr_list=None, flat_by=
 # ---------------------------------------------------------------- бэктест стратегии тренда (дневки)
 
 def backtest(daily, spec, cfg, monthly=None, stop_atr=2.0, trail_atr=3.0, allow_short=False, max_hold=60,
-             setups=("trend-pullback", "trend-breakout"), regime=None, require=("1w", "1d"), use_month=True,
-             warmup=60, start_date=None):
-    """Позиционная торговля по тренду на дневках: решение на закрытии дня, вход по открытию следующего."""
+             setups=("trend-pullback", "trend-breakout"), regime=None, require=None, use_month=True,
+             warmup=205, start_date=None, ema_n=ENTRY_EMA, min_turnover=None, random_p=None, seed=1):
+    """Позиционная торговля по тренду на дневках: решение на закрытии дня, вход по открытию следующего.
+    Для акций по умолчанию действует STOCK_REQUIRE. min_turnover — средний оборот за 60 дней, ₽.
+    random_p — контроль: вход в случайный день внутри тренда с этой вероятностью."""
     import costs
+    import random
     import sim
+    rnd = random.Random(seed)
+    if require is None:
+        require = STOCK_REQUIRE if spec.get("kind") == "shares" else ("1w", "1d")
     c = [b["c"] for b in daily]
     atr_list = ta.atr([b["h"] for b in daily], [b["l"] for b in daily], c)
+    ctx = signal_context(daily, ema_n)
+    has_val = any(b.get("val") for b in daily)
+    turnover = [0.0] * len(daily)
+    acc = 0.0
+    for j, b in enumerate(daily):
+        acc += b.get("val") or 0
+        if j >= 60:
+            acc -= daily[j - 60].get("val") or 0
+        turnover[j] = acc / 60 if j >= 59 else 0.0
     weeks = resample_period(daily, "W")
     months = monthly or resample_period(daily, "M")
     wk_state, mo_state = {}, {}
@@ -244,24 +280,33 @@ def backtest(daily, spec, cfg, monthly=None, stop_atr=2.0, trail_atr=3.0, allow_
     trades, i = [], warmup
     while i < len(daily) - 1:
         t = daily[i]["t"]
-        if start_date and t[:10] < start_date:
+        if start_date and daily[i + 1]["t"][:10] < start_date:
+            i += 1
+            continue
+        if min_turnover and has_val and turnover[i] < min_turnover:
             i += 1
             continue
         cw, cm = period_key(t, "W"), t[:7]
         pw = [k for k in wkeys if k < cw]
         pm = [k for k in mkeys if k < cm]
-        st = {"1w": {"dir": wk_state[pw[-1]] if pw else "flat"},
-              "1d": {"dir": trend_state(daily[max(0, i - 120):i + 1], "1d")["dir"]}}
+        st = {"1w": {"dir": wk_state[pw[-1]] if pw else "flat"}}
         if use_month:
             st["1M"] = {"dir": mo_state[pm[-1]] if pm else "flat"}
+        if "1d" in require or (allow_short and st["1w"]["dir"] == "down"):
+            st["1d"] = {"dir": trend_state(daily[max(0, i - 120):i + 1], "1d")["dir"]}
         v = combine(st, require=require, veto=("1M",) if use_month else ())
         d = v["direction"]
+        if d == "short" and "1d" not in require:
+            d = combine(st, veto=("1M",) if use_month else ())["direction"]
         if d == "short" and not allow_short:
             d = None
         if d == "long" and regime is not None and not regime.get(daily[i + 1]["t"][:10], True):
             d = None
-        sig = entry_signal(daily, d, i) if d else None
-        if not sig or sig["setup"] not in setups:
+        if random_p is not None:
+            sig = {"setup": "trend-random", "confirm": None} if d and rnd.random() < random_p else None
+        else:
+            sig = entry_signal(daily, d, i, ema_n=ema_n, ctx=ctx, setups=setups) if d else None
+        if not sig or (random_p is None and sig["setup"] not in setups):
             i += 1
             continue
         long_ = d == "long"
@@ -272,7 +317,7 @@ def backtest(daily, spec, cfg, monthly=None, stop_atr=2.0, trail_atr=3.0, allow_
         bars2 = list(daily)
         out, px, held, mfe = run_trailing(bars2, i + 1, entry, stop, long_, trail_atr, atr_list, max_bars=max_hold)
         cost_r = costs.in_r(spec, entry, risk, cfg)
-        trades.append({"date": daily[i + 1]["t"][:10], "dir": d, "setup": sig["setup"], "entry": entry, "stop": stop,
+        trades.append({"date": daily[i + 1]["t"][:10], "dir": d, "setup": sig["setup"], "confirm": sig["confirm"], "entry": entry, "stop": stop,
                        "exit": px, "outcome": out, "held": held, "mfe_r": round(mfe, 2), "cost_r": round(cost_r, 3),
                        "r": round(sim.r_multiple(entry, px, risk, long_, cost_r), 3),
                        "exit_date": daily[min(len(daily) - 1, i + held)]["t"][:10]})

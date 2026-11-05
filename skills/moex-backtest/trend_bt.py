@@ -99,13 +99,14 @@ def load(sym, a):
 
 def params(a):
     return {"stop_atr": a.stop_atr, "trail_atr": a.trail_atr, "allow_short": a.short, "max_hold": a.hold,
-            "setups": tuple(a.setups.split(",")), "use_month": not a.no_month}
+            "setups": tuple(a.setups.split(",")), "use_month": not a.no_month, "ema_n": a.entry_ema}
 
 
-def run(daily, monthly, spec, regime, cfg, p, start_date=None):
+def run(daily, monthly, spec, regime, cfg, p, start_date=None, random_p=None, seed=1):
     tr = trend.backtest(daily, spec, cfg, monthly=monthly, stop_atr=p["stop_atr"], trail_atr=p["trail_atr"],
                         allow_short=p["allow_short"], max_hold=p["max_hold"], setups=p["setups"], regime=regime,
-                        use_month=p["use_month"], start_date=start_date)
+                        use_month=p["use_month"], start_date=start_date, ema_n=p.get("ema_n", trend.ENTRY_EMA),
+                        min_turnover=cfg.get("min_turnover_rub"), random_p=random_p, seed=seed)
     return apply_dividends(tr, daily, spec.get("divs"))
 
 
@@ -157,7 +158,7 @@ def grid(a):
                                                      ["trend-pullback", "trend-breakout", "trend-pullback,trend-breakout"],
                                                      [True, False]):
         yield {"stop_atr": sa, "trail_atr": ta_, "allow_short": a.short, "max_hold": a.hold,
-               "setups": tuple(setups.split(",")), "use_month": month}
+               "setups": tuple(setups.split(",")), "use_month": month, "ema_n": a.entry_ema}
 
 
 def optimize(sym, a, quiet=False):
@@ -319,6 +320,43 @@ def cmd_portfolio(a):
     print("  сделки по годам: " + ", ".join("%s: %s" % (y, C.rub(v, 0)) for y, v in sorted(by.items())))
 
 
+def cmd_compare(a):
+    """Сравнение входов на одном списке бумаг: откаты к разным EMA, пробой, случайный день в том же тренде."""
+    cfg = C.config()
+    a.regime = True
+    since = a.since or "2019-01-03"
+    data = []
+    for sym in symbols(a):
+        try:
+            data.append(load(sym, a))
+        except (C.NetError, FileNotFoundError) as e:
+            print("%s: %s" % (sym, e))
+    base = params(a)
+    rows, seen = [], {}
+
+    def add(name, tr):
+        tr = [t for t in tr if t["date"] <= (a.until or "9999")]
+        seen[name] = tr
+        cells = [name]
+        for sel in (tr, [t for t in tr if t["date"] < a.cut], [t for t in tr if t["date"] >= a.cut]):
+            st = sim.stats([t["r"] for t in sel])
+            cells += [st.get("trades", 0), r(st["avg_r"]) if st.get("trades") else "—"]
+        rows.append(cells)
+    for n in (5, 7, 10, 12, 15, 20, 30, 50, 100, 200):
+        p = dict(base, ema_n=n, setups=("trend-pullback",))
+        add("откат EMA%d" % n, [t for d, m, s, g in data for t in run(d, m, s, g, cfg, p, since)])
+    p = dict(base, setups=("trend-breakout",))
+    add("пробой 20 дней", [t for d, m, s, g in data for t in run(d, m, s, g, cfg, p, since)])
+    add("случайный день", [t for sd in range(a.random_runs) for d, m, s, g in data
+                           for t in run(d, m, s, g, cfg, base, since, random_p=0.02, seed=sd + 1)])
+    tr = seen["откат EMA%d" % trend.ENTRY_EMA]
+    add("EMA10, EMA20 подтвердила", [t for t in tr if t["confirm"]])
+    add("EMA10, EMA20 не подтвердила", [t for t in tr if not t["confirm"]])
+    print("Сравнение входов · бумаг %d · с %s · отложенный период с %s" % (len(data), since, a.cut))
+    print(C.table(rows, ["вход", "сделок", "среднее", "до", "среднее", "после", "среднее"]))
+    print("Вывод делайте по отложенному периоду и сравнению со случайным днём. Много вариантов: лучший может быть случайностью.")
+
+
 def add_args(p, sym=True):
     if sym:
         p.add_argument("symbol")
@@ -338,4 +376,8 @@ def add_args(p, sym=True):
     p.add_argument("--by-year", action="store_true", help="разбивка результата по годам")
     p.add_argument("--capital", type=float, default=100000)
     p.add_argument("--risk", type=float, default=1.0, help="%% капитала риска на сделку (для trend-portfolio)")
+    p.add_argument("--entry-ema", type=int, default=trend.ENTRY_EMA, help="средняя для отката (по умолчанию 10)")
+    p.add_argument("--cut", default="2024-01-01", help="начало отложенного периода для trend-compare")
+    p.add_argument("--until", help="последняя дата входа для trend-compare")
+    p.add_argument("--random-runs", type=int, default=20, help="прогонов случайного входа в trend-compare")
     p.add_argument("--no-cash", action="store_true", help="не начислять проценты фонда на свободные деньги")
