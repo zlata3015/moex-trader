@@ -1,0 +1,1 @@
+{"dividends": {"columns": ["secid", "isin", "registryclosedate", "value", "currencyid"], "data": [["SBER", "RU0009029540", "2024-07-11", 33.3, "RUB"], ["SBER", "RU0009029540", "2025-07-18", 34.84, "RUB"], ["SBER", "RU0009029540", "2026-07-17", 37.6, "RUB"], ["SBER", "RU0009029540", "2026-11-05", 5.0, "RUB"]]}}

@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""moex-trend: торговля по тренду сверху вниз — месяц, неделя, день задают направление, вход по сигналу в тренде,
+выход по подтягиваемому стопу.
+
+  topdown.py analyze SBER                    тренды М/Н/Д, сигнал, предложение сделки
+  topdown.py analyze SBER --plan             + записать план (trader/plan.json) для moex-budget → moex-risk → moex-broker
+  topdown.py scan                            все ликвидные акции: где тренды согласны и есть сигнал
+  topdown.py analyze SBER --files-dir DIR    по файлам SBER_D.csv / SBER_M.csv (выгрузки ISS)
+"""
+import argparse
+import glob
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "moex-setup", "lib"))
+import common as C  # noqa: E402
+import moex  # noqa: E402
+import ta  # noqa: E402
+import trend  # noqa: E402
+
+ARROW = {"up": "▲ вверх", "down": "▼ вниз", "flat": "◆ неясно"}
+
+
+def load(sym, a):
+    if a.files_dir:
+        daily = moex.load_file(os.path.join(a.files_dir, "%s_D.csv" % sym))
+        mp = os.path.join(a.files_dir, "%s_M.csv" % sym)
+        monthly = moex.load_file(mp) if os.path.exists(mp) else None
+        px = sorted({x for b in daily[-60:] for x in (b["o"], b["h"], b["l"], b["c"])})
+        step = min([round(y - x, 6) for x, y in zip(px, px[1:]) if y - x > 1e-9] or [0.01])
+        spec = {"symbol": sym, "kind": "shares", "minstep": step, "name": sym}
+    else:
+        end = C.now_msk(a.now)
+        daily = moex.candles(sym, "1d", days=500, end=end, source="iss")
+        try:
+            monthly = moex.candles(sym, "1M", days=3650, end=end, source="iss")
+        except C.NetError:
+            monthly = None
+        spec = moex.spec(sym)
+    if a.now:
+        daily = [b for b in daily if b["t"][:10] <= a.now[:10]]
+    return daily, monthly, spec
+
+
+def analyze(sym, a):
+    cfg = C.config()
+    daily, monthly, spec = load(sym, a)
+    td = trend.top_down(daily, monthly)
+    v = td["verdict"]
+    d = v["direction"]
+    allowed = d == "long" or (d == "short" and (cfg["allow_short"] or a.short))
+    sig = trend.entry_signal(daily, d) if d else None
+    atr_d = ta.atr([b["h"] for b in daily], [b["l"] for b in daily], [b["c"] for b in daily])[-1]
+    last = daily[-1]
+    res = {"symbol": sym, "date": last["t"][:10], "price": last["c"], "atr": atr_d, "states": {k: td[k] for k in ("1M", "1w", "1d")},
+           "direction": d, "why": v["why"], "allowed": allowed, "signal": sig, "spec": spec}
+    if d and allowed:
+        long_ = d == "long"
+        stop = last["c"] - a.stop_atr * atr_d if long_ else last["c"] + a.stop_atr * atr_d
+        res["proposal"] = {"entry": last["c"], "stop": C.round_step(stop, spec.get("minstep") or 0.01, "down" if long_ else "up"),
+                           "trail": a.trail_atr, "risk_pct": a.stop_atr * atr_d / last["c"] * 100}
+    bt = (C.load_json(C.tpath("backtest", "summary.json"), {}) or {}).get("%s|trend" % sym)
+    if bt:
+        res["backtest"] = bt
+    return res
+
+
+def show(r):
+    print("%s · %s · цена %s · ATR(день) %s (%s)" % (r["symbol"], r["date"], C.px(r["price"]), C.px(r["atr"]),
+                                                    C.pct(r["atr"] / r["price"] * 100)))
+    for k, name in (("1M", "Месяц "), ("1w", "Неделя"), ("1d", "День  ")):
+        st = r["states"][k]
+        print("  %s %-9s %s" % (name, ARROW[st["dir"]], "; ".join(st["why"])))
+    d = r["direction"]
+    if not d:
+        print("Итог: СДЕЛКИ НЕТ — %s. Ждём, пока неделя и день совпадут." % r["why"])
+    elif not r["allowed"]:
+        print("Итог: тренд ВНИЗ (%s). Шорты выключены — в покупку не входим, ждём разворота." % r["why"])
+    else:
+        print("Итог: работаем только в %s (%s)." % ("ПОКУПКУ" if d == "long" else "ПРОДАЖУ (шорт)", r["why"]))
+        s = r["signal"]
+        p = r["proposal"]
+        if s:
+            print("Сигнал сегодня: %s — %s %s" % ({"trend-pullback": "откат к EMA20 и разворот", "trend-breakout": "пробой 20-дневного экстремума"}[s["setup"]],
+                                               "уровень", C.px(s["level"])))
+            print("Предложение: вход около %s (завтра на открытии или сейчас), стоп %s (%s ATR, −%s), без цели — "
+                  "подтягиваемый стоп %s ATR, держим, пока тренд жив" % (C.px(p["entry"]), C.px(p["stop"]), C.num(2, 0),
+                                                                        C.pct(p["risk_pct"]), C.num(p["trail"], 1)))
+        else:
+            print("Сигнала сегодня нет: тренд есть, но точки входа нет (ждём отката к EMA20 или пробоя). Не догоняем цену.")
+    bt = r.get("backtest")
+    if bt:
+        st = bt.get("oos") if bt.get("oos") and bt["oos"].get("trades", 0) >= 5 else bt["stats"]
+        if st.get("trades"):
+            print("Бэктест этой стратегии по %s: %d сделок, среднее %s%sR, прибыльных %s" % (
+                r["symbol"], st["trades"], "+" if st["avg_r"] >= 0 else "", C.num(st["avg_r"], 2), C.pct(st["winrate"], 0)))
+
+
+def write_plan(r, a):
+    p = r["proposal"]
+    now = C.now_msk(a.now)
+    long_ = r["direction"] == "long"
+    plan = {"symbol": r["symbol"], "kind": r["spec"].get("kind", "shares"), "direction": r["direction"], "mode": "position",
+            "tf": "1d", "setup": (r["signal"] or {}).get("setup", "trend-manual"), "entry": p["entry"], "stop": p["stop"],
+            "target": None, "risk_per_unit": abs(p["entry"] - p["stop"]), "reward_per_unit": None, "rr": None,
+            "stop_rule": "atr:%s" % a.stop_atr, "target_rule": "none", "trail": p["trail"], "initial_stop": p["stop"],
+            "minstep": r["spec"].get("minstep"), "atr": r["atr"], "date": now.strftime("%Y-%m-%d"), "created": C.fmt_dt(now),
+            "entry_time": C.fmt_dt(now), "flat_by": None, "max_hold_days": C.config().get("max_hold_days_position", 60),
+            "nearest_resistance": None, "nearest_support": None,
+            "trend": {k: r["states"][k]["dir"] for k in r["states"]}}
+    C.save_json(C.tpath("plan.json"), plan)
+    print("\nПлан записан: %s. Дальше: moex-budget → moex-risk → moex-broker." % C.tpath("plan.json"))
+
+
+def cmd_analyze(a):
+    r = analyze(a.symbol, a)
+    show(r)
+    if a.plan:
+        if r.get("proposal") and (r["signal"] or a.force):
+            write_plan(r, a)
+        else:
+            print("\nПлан не записан: %s" % ("нет сигнала входа (--force, чтобы всё равно)" if r.get("proposal") else "нет сделки по тренду"))
+
+
+def cmd_scan(a):
+    if a.files_dir:
+        syms = sorted(os.path.basename(f)[:-6] for f in glob.glob(os.path.join(a.files_dir, "*_D.csv"))
+                      if not os.path.basename(f).startswith("IMOEX"))
+    else:
+        import importlib.util
+        sp = importlib.util.spec_from_file_location("scan", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "moex-scanner", "scan.py"))
+        scan = importlib.util.module_from_spec(sp)
+        sp.loader.exec_module(scan)
+        syms = [u["symbol"] for u in scan.universe("shares", C.config()["min_turnover_rub"], a.limit)]
+    rows, ready = [], []
+    for s in syms:
+        try:
+            r = analyze(s, a)
+        except (C.NetError, FileNotFoundError) as e:
+            sys.stderr.write("%s: %s\n" % (s, e))
+            continue
+        st = r["states"]
+        verdict = ("ПОКУПКА" if r["direction"] == "long" else "ШОРТ" if r["direction"] == "short" and r["allowed"]
+                   else "вниз (шорты выкл.)" if r["direction"] == "short" else "—")
+        sig = {"trend-pullback": "откат", "trend-breakout": "пробой"}.get((r["signal"] or {}).get("setup"), "")
+        rows.append([s, ARROW[st["1M"]["dir"]], ARROW[st["1w"]["dir"]], ARROW[st["1d"]["dir"]], verdict, sig or "нет", C.px(r["price"])])
+        if sig and r["allowed"]:
+            ready.append(s)
+    print(C.table(rows, ["тикер", "месяц", "неделя", "день", "направление", "сигнал", "цена"]))
+    print("\nГотовы к входу по тренду: %s" % (", ".join(ready) if ready else "нет — это нормально, ждём сигналов"))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def common(p):
+        p.add_argument("--files-dir"); p.add_argument("--now", help="'YYYY-MM-DD' — разбор на дату в прошлом")
+        p.add_argument("--short", action="store_true", help="разрешить шорт для этого разбора")
+        p.add_argument("--stop-atr", type=float, default=2.0)
+        p.add_argument("--trail-atr", type=float, default=C.config().get("trail_atr", 3.0))
+    p = sub.add_parser("analyze"); p.add_argument("symbol"); common(p)
+    p.add_argument("--plan", action="store_true"); p.add_argument("--force", action="store_true")
+    p.set_defaults(fn=cmd_analyze)
+    p = sub.add_parser("scan"); common(p); p.add_argument("--limit", type=int, default=40); p.set_defaults(fn=cmd_scan)
+    a = ap.parse_args()
+    try:
+        a.fn(a)
+    except C.NetError as e:
+        C.die(str(e))
+
+
+if __name__ == "__main__":
+    main()

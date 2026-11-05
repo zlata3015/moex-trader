@@ -1,0 +1,11 @@
+# состояние, сделки и личные настройки
+trader/
+*.token
+tinvest_token
+tinvest_sandbox_token
+.env
+# выгрузки и служебное
+exports/
+__pycache__/
+*.pyc
+.DS_Store
