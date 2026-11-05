@@ -48,7 +48,7 @@ def size(plan, spec, cfg, account, max_loss):
         "mode": plan["mode"], "flat_by": plan.get("flat_by"), "max_hold_days": plan.get("max_hold_days"),
         "setup": plan.get("setup"), "date": plan["date"], "limiter": limiter,
         "spec": {k: spec.get(k) for k in ("minstep", "stepprice", "initial_margin", "high_limit", "low_limit",
-                                           "last_trade_date", "turnover", "facevalue", "lot", "last")},
+                                           "last_trade_date", "turnover", "facevalue", "lot", "last", "issuer", "issuer_name")},
     }
     order["fingerprint"] = C.fingerprint(order)
     return order, {"by_risk": by_risk, "by_size": by_size, "risk_lot": risk_lot, "capital_lot": capital_lot}
@@ -67,8 +67,23 @@ def main():
         C.die("Нет trader/plan.json — сначала moex-exit plan --write")
     account = a.account or cfg["account_size"]
     max_loss = C.money_limit(a.max_loss or cfg["max_loss_per_trade"], account)
+    import riskbook
+    snap = riskbook.snapshot(cfg, C.now_msk())
+    dd_note = ""
+    if snap["dd_mult"] < 1:
+        max_loss *= snap["dd_mult"]
+        dd_note = " (урезан: просадка %s от максимума капитала)" % C.pct(snap["drawdown"] * 100, 1)
+    room = C.money_limit(cfg.get("max_open_risk", "3%"), account) - snap["open_risk"]
+    lost_today = -min(0, snap["realized_today"])
+    room = min(room, C.money_limit(cfg["daily_loss_limit"], account) - lost_today)
+    if room < max_loss:
+        max_loss = max(0.0, room)
+        dd_note += " (урезан до остатка лимитов: открытый риск %s, потеряно сегодня %s)" % (
+            C.rub(snap["open_risk"], 0), C.rub(lost_today, 0))
     try:
         spec = moex.spec(plan["symbol"], a.kind or plan["kind"])
+        if spec["kind"] in ("bonds", "corp"):
+            spec.update(moex.issuer(plan["symbol"]) or {})
     except C.NetError as e:
         C.die(str(e))
     order, info = size(plan, spec, cfg, account, max_loss)
@@ -76,7 +91,10 @@ def main():
     order["fingerprint"] = C.fingerprint(order)
     k = spec["kind"]
     unit_word = {"futures": "контракт", "bonds": "облигация"}.get(k, "лот")
-    print("Размер позиции · %s (%s) · счёт %s, риск на сделку %s" % (order["symbol"], order.get("name") or k, C.rub(account, 0), C.rub(max_loss, 0)))
+    print("Размер позиции · %s (%s) · счёт %s, риск на сделку %s%s" % (order["symbol"], order.get("name") or k, C.rub(account, 0),
+                                                                      C.rub(max_loss, 0), dd_note))
+    if snap["dd_mult"] == 0:
+        print("  ⛔ просадка %s — пауза в торговле до разбора (dd_stop_pct). Новые позиции не открываем." % C.pct(snap["drawdown"] * 100, 1))
     if k == "futures":
         print("  шаг цены %s = %s, ГО %s на контракт" % (("%g" % spec["minstep"]).replace(".", ","), C.rub(spec.get("stepprice")), C.rub(spec.get("initial_margin"), 0)))
     elif k != "bonds":

@@ -427,3 +427,15 @@ def adjust_splits(bars, divs=None, threshold=2.5):
                     d["value"] *= f
             events.append((date, f))
     return bars, divs, events
+
+
+def issuer(secid):
+    """Эмитент бумаги из справочника ISS: {issuer: id, issuer_name, issuer_inn}."""
+    try:
+        rows = search(secid, limit=10)
+    except C.NetError:
+        return None
+    for r in rows:
+        if (r.get("secid") or "").upper() == secid.upper():
+            return {"issuer": r.get("emitent_id"), "issuer_name": r.get("emitent_title"), "issuer_inn": r.get("emitent_inn")}
+    return None

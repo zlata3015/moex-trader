@@ -3,6 +3,7 @@
 
   check.py                 все заявки из trader/orders.json
   check.py --now "2026-10-30 09:26"
+  check.py --status        сводка рисков портфеля: капитал, просадка, открытый риск по позициям, лимиты
 """
 import argparse
 import os
@@ -14,19 +15,9 @@ import common as C  # noqa: E402
 import moex  # noqa: E402
 
 
-def today_stats(now):
-    log = C.load_json(C.tpath("state", "broker.json"), {}) or {}
-    d = now.strftime("%Y-%m-%d")
-    ev = [e for e in log.get("events", []) if (e.get("at") or "").startswith(d)]
-    placed = [e for e in ev if e.get("type") == "placed" and not e.get("closing")]
-    realized = sum(e.get("pnl", 0) for e in ev if e.get("type") == "fill" and e.get("pnl") is not None)
-    pf = C.load_json(C.tpath("portfolio.json"), {}) or {}
-    open_pos = [s for s, p in (pf.get("positions") or {}).items() if p.get("lots")]
-    filled = {e.get("order_id") for e in ev if e.get("type") == "fill"}
-    open_risk = sum(e.get("max_loss", 0) for e in placed
-                    if e["symbol"] in open_pos or (e.get("order_id") not in filled and e.get("type") != "cancelled"))
-    return {"trades": len(placed), "realized": realized, "open_risk": open_risk, "open_positions": open_pos,
-            "cash": pf.get("cash")}
+def today_stats(now, cfg=None, offline=False):
+    import riskbook
+    return riskbook.snapshot(cfg or C.config(), now, offline)
 
 
 def check(o, cfg, now, st, offline=False):
@@ -51,16 +42,64 @@ def check(o, cfg, now, st, offline=False):
     else:
         add((long_ and o["stop"] < o["entry"] < tgt) or (not long_ and tgt < o["entry"] < o["stop"]),
             "стоп и цель", "стоп %s, вход %s, цель %s" % (C.px(o["stop"]), C.px(o["entry"]), C.px(tgt)))
-    add(o["max_loss"] <= max_loss * 1.001, "убыток на сделку", "%s из лимита %s" % (C.rub(o["max_loss"], 0), C.rub(max_loss, 0)))
+    import riskbook
+    # просадка от максимума: −10% — объём вдвое, −15% — пауза
+    mult = st.get("dd_mult", 1.0)
+    dd = st.get("drawdown", 0.0)
+    add(mult > 0, "просадка", "капитал %s, максимум %s, просадка %s — %s" % (
+        C.rub(st.get("equity", account), 0), C.rub(st.get("peak", account), 0), C.pct(dd * 100, 1),
+        "норма" if mult == 1 else "объём вдвое меньше" if mult == 0.5 else "ПАУЗА: торговля остановлена до разбора"),
+        warn=(mult == 0.5))
+    limit = max_loss * mult
+    add(o["max_loss"] <= limit * 1.001, "убыток на сделку", "%s из лимита %s%s" % (
+        C.rub(o["max_loss"], 0), C.rub(limit, 0), " (урезан из-за просадки)" if mult < 1 else ""))
     dl = C.money_limit(cfg["daily_loss_limit"], account)
-    worst = -min(0, st["realized"]) + st["open_risk"] + o["max_loss"]
-    add(worst <= dl, "дневной лимит", "уже потеряно %s, открытый риск %s, эта сделка %s — итого %s из %s" % (
-        C.rub(-min(0, st["realized"]), 0), C.rub(st["open_risk"], 0), C.rub(o["max_loss"], 0), C.rub(worst, 0), C.rub(dl, 0)))
-    add(st["realized"] > -dl, "стоп на день", "дневной лимит убытка уже выбран — сегодня больше не торгуем"
-        if st["realized"] <= -dl else "лимит не выбран")
-    add(st["trades"] < cfg["max_trades_per_day"], "сделок за день", "%d из %d" % (st["trades"], cfg["max_trades_per_day"]))
-    add(len(st["open_positions"]) < cfg["max_open_positions"] or o["symbol"] in st["open_positions"], "открытых позиций",
-        "%d из %d" % (len(st["open_positions"]), cfg["max_open_positions"]))
+    wl = C.money_limit(cfg.get("weekly_loss_limit", "4%"), account)
+    lost_d, lost_w = -min(0, st["realized_today"]), -min(0, st["realized_week"])
+    add(lost_d < dl, "стоп на день", "сегодня потеряно %s из %s%s" % (
+        C.rub(lost_d, 0), C.rub(dl, 0), " — сегодня больше не торгуем" if lost_d >= dl else ""))
+    add(lost_d + o["max_loss"] <= dl * 1.001, "дневной запас", "потеряно сегодня %s + риск сделки %s = %s из %s" % (
+        C.rub(lost_d, 0), C.rub(o["max_loss"], 0), C.rub(lost_d + o["max_loss"], 0), C.rub(dl, 0)))
+    add(lost_w < wl, "стоп на неделю", "за неделю потеряно %s из %s%s" % (
+        C.rub(lost_w, 0), C.rub(wl, 0), " — до понедельника не торгуем" if lost_w >= wl else ""))
+    mo = C.money_limit(cfg.get("max_open_risk", "3%"), account)
+    add(st["open_risk"] + o["max_loss"] <= mo * 1.001, "открытый риск", "позиции и заявки %s + эта сделка %s = %s из %s" % (
+        C.rub(st["open_risk"], 0), C.rub(o["max_loss"], 0), C.rub(st["open_risk"] + o["max_loss"], 0), C.rub(mo, 0)))
+    if st.get("no_stop"):
+        add(False, "позиции без стопа", "нет стопа у %s — сначала поставьте стоп (moex-broker protect)" % ", ".join(st["no_stop"]))
+    add(st["trades_today"] < cfg["max_trades_per_day"], "сделок за день", "%d из %d" % (st["trades_today"], cfg["max_trades_per_day"]))
+    pos = st.get("positions", {})
+    # усреднение убытка запрещено
+    if o["symbol"] in pos:
+        p = pos[o["symbol"]]
+        same = (p.get("side", "long") == "long") == long_
+        losing = (o["entry"] < p["avg"]) if long_ else (o["entry"] > p["avg"])
+        if same:
+            add(not losing, "усреднение", "уже есть позиция по %s, средняя %s — %s" % (
+                C.px(p["avg"]), o["symbol"], "докупка в убытке ЗАПРЕЩЕНА" if losing else "добавление в прибыли"))
+    # коррелирующие позиции считаем как одну
+    group = riskbook.correlated_group(o["symbol"], [s for s in pos if s != o["symbol"]], cfg, offline, now)
+    if group:
+        g_risk = sum(st["position_risk"].get(s) or 0 for s, _ in group)
+        g_lim = limit * float(cfg.get("corr_group_risk_mult", 1.0))
+        add(g_risk + o["max_loss"] <= g_lim * 1.001, "корреляция", "связана с %s; общий риск группы %s из %s" % (
+            ", ".join("%s (%s)" % (s, why) for s, why in group), C.rub(g_risk + o["max_loss"], 0), C.rub(g_lim, 0)))
+    linked = {s for s, _ in group}
+    n_groups = len({riskbook.sector(s) or s for s in pos if s not in linked and s != o["symbol"]})
+    add(n_groups < cfg["max_open_positions"] or o["symbol"] in pos or bool(group), "открытых позиций",
+        "%d независимых из %d (связанные бумаги считаются одной)" % (n_groups, cfg["max_open_positions"]))
+    # лимит на корпоративного эмитента (облигации)
+    if k in ("bonds", "corp") and not str(o["symbol"]).startswith("SU"):
+        issuer = (o.get("spec") or {}).get("issuer")
+        if issuer:
+            same_iss = sum(abs(p.get("avg", 0)) * p["lots"] * (p.get("facevalue") or 1000) / 100
+                           for s, p in pos.items() if p.get("issuer") == issuer)
+            lim_iss = account * float(cfg.get("issuer_limit_pct", 5)) / 100
+            add(same_iss + o["capital"] <= lim_iss * 1.001, "эмитент", "%s: уже %s + эта покупка %s = %s из %s (%s%% счёта)" % (
+                (o.get("spec") or {}).get("issuer_name") or issuer, C.rub(same_iss, 0), C.rub(o["capital"], 0),
+                C.rub(same_iss + o["capital"], 0), C.rub(lim_iss, 0), cfg.get("issuer_limit_pct", 5)))
+        else:
+            add(True, "эмитент", "не удалось определить эмитента — проверьте лимит 5%% вручную", warn=True)
     if tgt is not None:
         rr = o.get("rr") or 0
         add(rr >= cfg["min_reward_risk"], "прибыль/риск", "%s, минимум %s" % (C.num(rr, 2), C.num(cfg["min_reward_risk"], 1)))
@@ -168,16 +207,55 @@ def check(o, cfg, now, st, offline=False):
     return res
 
 
+def status(cfg, now, offline):
+    import riskbook
+    st = riskbook.snapshot(cfg, now, offline)
+    acc = st["account"]
+    lim = lambda key, d: C.money_limit(cfg.get(key, d), acc)
+    print("Риски портфеля на %s МСК" % C.fmt_dt(now))
+    print("  капитал %s · максимум %s · просадка %s (объём %s)" % (
+        C.rub(st["equity"], 0), C.rub(st["peak"], 0), C.pct(st["drawdown"] * 100, 1),
+        {1.0: "обычный", 0.5: "вдвое меньше", 0.0: "ПАУЗА"}[st["dd_mult"]]))
+    print("  результат: сегодня %s (лимит −%s) · неделя %s (лимит −%s)" % (
+        C.rub(st["realized_today"], 0), C.rub(lim("daily_loss_limit", "2%"), 0),
+        C.rub(st["realized_week"], 0), C.rub(lim("weekly_loss_limit", "4%"), 0)))
+    print("  открытый риск %s из %s" % (C.rub(st["open_risk"], 0), C.rub(lim("max_open_risk", "3%"), 0)))
+    rows = []
+    for s_, p in st["positions"].items():
+        r = st["position_risk"][s_]
+        rows.append([s_, riskbook.sector(s_) or "—", p.get("side", "long"), p["lots"], C.px(p["avg"]),
+                     C.px(p.get("stop")) if p.get("stop") is not None else "НЕТ СТОПА",
+                     C.rub(r, 0) if r is not None else "∞", C.pct(r / acc * 100, 2) if r is not None else "—"])
+    for e in st["pending"]:
+        rows.append([e["symbol"], riskbook.sector(e["symbol"]) or "—", "заявка", e.get("lots"), C.px(e.get("price")),
+                     C.px(e.get("stop")), C.rub(e.get("max_loss", 0), 0), C.pct(e.get("max_loss", 0) / acc * 100, 2)])
+    if rows:
+        print(C.table(rows, ["тикер", "отрасль", "сторона", "лотов", "средняя", "стоп", "риск ₽", "% счёта"]))
+    else:
+        print("  открытых позиций нет")
+    by_sec = {}
+    for s_, p in st["positions"].items():
+        by_sec.setdefault(riskbook.sector(s_) or s_, []).append(s_)
+    for sec, lst in by_sec.items():
+        if len(lst) > 1:
+            print("  ⚠ связанные позиции (считаются одной): %s — %s" % (sec, ", ".join(lst)))
+    if st["no_stop"]:
+        print("  ⛔ без стопа: %s — новые сделки заблокированы, пока не поставлен стоп" % ", ".join(st["no_stop"]))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--now"); ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--status", action="store_true")
     a = ap.parse_args()
     cfg = C.config()
     now = C.now_msk(a.now)
+    if a.status:
+        return status(cfg, now, a.offline)
     orders = C.load_json(C.tpath("orders.json"), []) or []
     if not orders:
         C.die("Нет заявок в trader/orders.json — сначала moex-budget size.py --write")
-    st = today_stats(now)
+    st = today_stats(now, cfg, a.offline)
     state = C.load_json(C.tpath("state", "risk.json"), {}) or {}
     verdicts = state.get("verdicts", {})
     for i, o in enumerate(orders, 1):

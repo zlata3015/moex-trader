@@ -265,8 +265,11 @@ def record_fill(s, symbol, kind, side, lots, price, now, order=None, order_id=No
         new = cur + signed
         pos["avg"] = (abs(cur) * pos["avg"] + lots * price) / abs(new)
         if cur == 0:
+            sp = (order or {}).get("spec") or {}
             pos.update(opened=C.fmt_dt(now), setup=(order or {}).get("setup"), risk_rub=(order or {}).get("max_loss_at_stop"),
-                       fees=0.0, stop=(order or {}).get("stop"), target=(order or {}).get("target"))
+                       fees=0.0, stop=(order or {}).get("stop"), target=(order or {}).get("target"),
+                       stepprice=sp.get("stepprice"), minstep=sp.get("minstep"), facevalue=sp.get("facevalue"),
+                       issuer=sp.get("issuer"), mode=(order or {}).get("mode"))
         pos["fees"] = pos.get("fees", 0) + fee
     else:                                        # закрытие (частичное)
         q = min(lots, abs(cur))
@@ -304,6 +307,21 @@ def cmd_fill(a):
     o = os_[0] if os_ else None
     record_fill(s, a.symbol, a.kind or (o or {}).get("kind", "shares"), a.side, a.lots, a.price, now, order=o,
                 lot_size=a.lot_size or (o or {}).get("lot_size"), fee=a.fee)
+
+
+def cmd_set_stop(a):
+    pf = C.load_json(C.tpath("portfolio.json"), {}) or {}
+    p = (pf.get("positions") or {}).get(a.symbol)
+    if not p or not p.get("lots"):
+        C.die("Нет открытой позиции %s в учёте" % a.symbol)
+    old = p.get("stop")
+    long_ = p.get("side", "long") == "long"
+    if old is not None and ((long_ and a.stop < old) or (not long_ and a.stop > old)):
+        C.die("Отодвигать стоп запрещено: был %s, новый %s дальше от цены. Стоп двигается только в сторону прибыли." % (
+            C.px(old), C.px(a.stop)))
+    p["stop"] = a.stop
+    C.save_json(C.tpath("portfolio.json"), pf)
+    print("Стоп %s в учёте: %s (был %s). Не забудьте выставить его у брокера." % (a.symbol, C.px(a.stop), C.px(old)))
 
 
 def cmd_accounts(a):
@@ -369,6 +387,9 @@ def main():
         p.set_defaults(fn=fn)
     p = sub.add_parser("flatten"); p.add_argument("--symbol", required=True); p.add_argument("--lots", type=int)
     p.add_argument("--kind"); p.set_defaults(fn=cmd_flatten)
+    p = sub.add_parser("set-stop", help="записать/подтянуть стоп позиции в учёте (стоп двигается только в сторону прибыли)")
+    p.add_argument("--symbol", required=True); p.add_argument("--stop", type=float, required=True)
+    p.set_defaults(fn=cmd_set_stop)
     p = sub.add_parser("fill"); p.add_argument("--symbol", required=True); p.add_argument("--side", choices=["buy", "sell"], required=True)
     p.add_argument("--lots", type=int, required=True); p.add_argument("--price", type=float, required=True)
     p.add_argument("--kind"); p.add_argument("--lot-size", type=int); p.add_argument("--fee", type=float)

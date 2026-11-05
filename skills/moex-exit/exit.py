@@ -155,6 +155,11 @@ def cmd_update(a):
         p["stop"] = new
         p.setdefault("stop_history", []).append([C.fmt_dt(C.now_msk(a.now)), new])
         C.save_json(C.tpath("plan.json"), p)
+        pf = C.load_json(C.tpath("portfolio.json"), {}) or {}
+        pos = (pf.get("positions") or {}).get(p["symbol"])
+        if pos and pos.get("lots"):
+            pos["stop"] = new          # открытый риск портфеля считается от актуального стопа
+            C.save_json(C.tpath("portfolio.json"), pf)
         locked = (new - p["entry"]) * (1 if long_ else -1)
         print("Стоп подтянут до %s%s. Передвиньте стоп у брокера: broker.py protect --index 1 --replace" % (
             C.px(new), (" — прибыль %s на акцию уже защищена" % C.px(locked)) if locked > 0 else ""))

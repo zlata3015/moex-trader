@@ -28,7 +28,9 @@ python3 "${CLAUDE_SKILL_DIR}/setup.py" set max_loss_per_trade '"1%"'
 
 | ключ | что значит |
 | --- | --- |
-| account_size, max_loss_per_trade, daily_loss_limit | счёт, риск на сделку (₽ или "1%"), дневной стоп |
+| account_size, max_loss_per_trade, daily_loss_limit, weekly_loss_limit | капитал, риск на сделку ("0.5%"), дневной и недельный стоп |
+| max_open_risk, dd_half_pct, dd_stop_pct | суммарный открытый риск, просадка до урезания объёма и до паузы |
+| corr_threshold, corr_group_risk_mult, issuer_limit_pct | связанные позиции считаются одной; лимит на эмитента облигаций |
 | max_trades_per_day, max_open_positions, max_position_pct | лимиты активности и концентрации |
 | min_reward_risk, min_target_cost_multiple | минимум прибыль/риск и «до цели не меньше N издержек» |
 | fee_pct, futures_fee_rub, slippage_ticks | комиссия за сторону, ₽ за контракт, проскальзывание в шагах цены |

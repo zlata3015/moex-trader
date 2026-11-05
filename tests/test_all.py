@@ -168,7 +168,8 @@ class TestPipeline(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp()
         cls.env = {"TRADER_DIR": cls.tmp, "TINVEST_TOKEN": "dummy-token-never-printed"}
         with open(os.path.join(cls.tmp, "config.json"), "w") as f:
-            json.dump({"require_trend_alignment": False}, f)   # здесь проверяем механику, фильтр тренда — отдельно
+            json.dump({"require_trend_alignment": False, "require_backtest": False, "min_reward_risk": 1.5,
+                       "max_loss_per_trade": 1000}, f)   # здесь проверяем механику; правила риска — в TestRiskRules
         _write_tinvest_fixtures()
 
     def test_chain(self):
@@ -307,6 +308,104 @@ class TestTrend(unittest.TestCase):
         self.assertIn("подтягиваемый стоп", r)
         u = run("moex-exit/exit.py", "update", "--now", DAY + " 18:50", env=env).stdout
         self.assertIn("трейлинг", u)
+
+
+class TestRiskRules(unittest.TestCase):
+    """Правила риска портфеля: позиции прошлых дней, неделя, просадка, корреляция, усреднение, стоп только вперёд."""
+
+    BASE = {"require_trend_alignment": False, "require_backtest": False, "min_reward_risk": 1.5, "regime_filter": False}
+
+    def prep(self, extra_cfg=None, positions=None, events=None):
+        tmp = tempfile.mkdtemp()
+        env = {"TRADER_DIR": tmp}
+        cfg = dict(self.BASE, **(extra_cfg or {}))
+        os.makedirs(os.path.join(tmp, "state"))
+        with open(os.path.join(tmp, "config.json"), "w") as f:
+            json.dump(cfg, f)
+        if positions is not None:
+            with open(os.path.join(tmp, "portfolio.json"), "w") as f:
+                json.dump({"cash": None, "positions": positions}, f)
+        with open(os.path.join(tmp, "state", "broker.json"), "w") as f:
+            json.dump({"events": events or [], "approvals": {}}, f)
+        run("moex-entry/entry.py", "check", "SBER", "--setup", "orb", "--now", DAY + " 09:26", env=env)
+        run("moex-exit/exit.py", "plan", "--write", "--now", DAY + " 09:26", env=env)
+        run("moex-budget/size.py", "--write", env=env)
+        return env, tmp
+
+    def check(self, env):
+        return run("moex-risk/check.py", "--now", DAY + " 09:26", "--offline", env=env).stdout
+
+    def line(self, out, name):
+        return next((l for l in out.splitlines() if name in l), "")
+
+    def test_clean_pass(self):
+        env, _ = self.prep()
+        out = self.check(env)
+        self.assertIn("PASS", out)
+
+    def test_swing_positions_count_in_open_risk(self):
+        pos = {"ROSN": {"lots": 100, "avg": 380.0, "stop": 352.0, "side": "long", "kind": "shares", "lot_size": 1}}
+        env, tmp = self.prep(positions=pos)        # позиция открыта давно, риск 2 800 ₽ до стопа
+        o = _load(os.path.join(tmp, "orders.json"))[0]
+        self.assertLessEqual(o["max_loss"], 200.5)  # бюджет урезал сделку до остатка лимита 3 000 − 2 800
+        self.assertIn("✓", self.line(self.check(env), "открытый риск"))
+        pos["ROSN"]["stop"] = 350.0                 # риск 3 000 ₽ — лимит выбран целиком
+        env2, _ = self.prep(positions=pos)
+        out2 = self.check(env2)
+        self.assertIn("BLOCK", out2)
+
+    def test_stop_in_profit_frees_risk(self):
+        pos = {"ROSN": {"lots": 100, "avg": 380.0, "stop": 385.0, "side": "long", "kind": "shares", "lot_size": 1}}
+        env, _ = self.prep(positions=pos)          # стоп подтянут выше входа: риска нет
+        out = self.check(env)
+        self.assertIn("✓", self.line(out, "открытый риск"))
+
+    def test_position_without_stop_blocks(self):
+        pos = {"ROSN": {"lots": 10, "avg": 380.0, "side": "long", "kind": "shares", "lot_size": 1}}
+        env, _ = self.prep(positions=pos)
+        self.assertIn("позиции без стопа", self.check(env))
+
+    def test_weekly_limit(self):
+        ev = [{"type": "fill", "at": "2026-10-26 12:00", "pnl": -2500, "symbol": "GAZP"},
+              {"type": "fill", "at": "2026-10-28 12:00", "pnl": -1600, "symbol": "LKOH"}]
+        env, _ = self.prep(events=ev)
+        out = self.check(env)
+        self.assertIn("✗", self.line(out, "стоп на неделю"))
+        self.assertIn("✓", self.line(out, "стоп на день"))
+
+    def test_drawdown_halves_then_pauses(self):
+        ev = [{"type": "fill", "at": "2026-10-20 12:00", "pnl": -11000, "symbol": "GAZP"}]
+        env, tmp = self.prep(extra_cfg={"max_open_risk": "10%"}, events=ev)
+        o = _load(os.path.join(tmp, "orders.json"))[0]
+        self.assertLessEqual(o["max_loss"], 250)   # 0,5% от 100 000 = 500, при просадке 11% — вдвое меньше
+        out = self.check(env)
+        self.assertIn("объём вдвое меньше", out)
+        ev2 = [{"type": "fill", "at": "2026-10-20 12:00", "pnl": -16000, "symbol": "GAZP"}]
+        env2, _ = self.prep(events=ev2)
+        out2 = self.check(env2)
+        self.assertIn("ПАУЗА", out2)
+        self.assertIn("BLOCK", out2)
+
+    def test_correlated_positions_count_as_one(self):
+        pos = {"VTBR": {"lots": 1000, "avg": 56.0, "stop": 55.6, "side": "long", "kind": "shares", "lot_size": 1}}
+        env, _ = self.prep(positions=pos)          # VTBR и SBER — одна отрасль; риск VTBR 400 ₽ + SBER ≈ 350 ₽ > 500 ₽
+        out = self.check(env)
+        self.assertIn("✗", self.line(out, "корреляция"))
+
+    def test_no_averaging_down(self):
+        pos = {"SBER": {"lots": 5, "avg": 455.0, "stop": 430.0, "side": "long", "kind": "shares", "lot_size": 1}}
+        env, _ = self.prep(extra_cfg={"max_open_risk": "10%"}, positions=pos)
+        out = self.check(env)
+        self.assertIn("ЗАПРЕЩЕНА", out)
+
+    def test_stop_only_moves_forward(self):
+        pos = {"SBER": {"lots": 5, "avg": 440.0, "stop": 430.0, "side": "long", "kind": "shares", "lot_size": 1}}
+        env, tmp = self.prep(positions=pos)
+        bad = run("moex-broker/broker.py", "set-stop", "--symbol", "SBER", "--stop", "420", env=env, ok=False)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("Отодвигать стоп запрещено", bad.stderr)
+        run("moex-broker/broker.py", "set-stop", "--symbol", "SBER", "--stop", "436", env=env)
+        self.assertEqual(_load(os.path.join(tmp, "portfolio.json"))["positions"]["SBER"]["stop"], 436)
 
 
 class TestScripts(unittest.TestCase):
