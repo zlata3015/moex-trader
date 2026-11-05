@@ -149,7 +149,7 @@ class TestSetupsSim(unittest.TestCase):
         sh = {"kind": "shares", "minstep": 0.01, "lot": 10}
         self.assertAlmostEqual(costs.per_unit(sh, 300, cfg), 300 * 0.0005 * 2 + 0.02)
         fu = {"kind": "futures", "minstep": 1, "stepprice": 1.0}
-        self.assertAlmostEqual(costs.per_unit(fu, 84000, cfg), 4.0 + 2)
+        self.assertAlmostEqual(costs.per_unit(fu, 84000, cfg), 84000 * 0.0004 * 2 + 2)
         self.assertEqual(costs.rub_per_point({"kind": "bonds", "facevalue": 1000}), 10)
 
     def test_stats(self):
@@ -209,7 +209,7 @@ class TestPipeline(unittest.TestCase):
         self.assertIn("уже отправлялась", again.stderr)
         run("moex-broker/broker.py", "--now", DAY + " 09:30", "status", "--index", "1", env=env)
         run("moex-broker/broker.py", "--now", DAY + " 11:00", "fill", "--symbol", "SBER", "--side", "sell", "--lots",
-            str(o["lots"]), "--price", str(o["target"]), env=env)
+            str(_load(os.path.join(self.tmp, "portfolio.json"))["positions"]["SBER"]["lots"]), "--price", str(o["target"]), env=env)
         j = _load((os.path.join(self.tmp, "journal.json")))
         self.assertEqual(len(j), 1)
         self.assertGreater(j[0]["r"], 1.0)
@@ -568,6 +568,143 @@ class TestScripts(unittest.TestCase):
         self.assertTrue(stop["fired"].startswith("отменено"))
 
 
+class TestProtection(unittest.TestCase):
+    def test_futures_order_without_target(self):
+        import importlib.util
+        sp = importlib.util.spec_from_file_location("risk_check", os.path.join(SK, "moex-risk", "check.py"))
+        m = importlib.util.module_from_spec(sp)
+        sp.loader.exec_module(m)
+        o = {"direction": "long", "kind": "futures", "symbol": "SiZ6", "lots": 1, "stop": 80000.0, "entry": 82000.0, "target": None, "trail": 3,
+             "max_loss": 500, "capital": 12000, "mode": "swing", "date": DAY, "spec": {"high_limit": 90000, "low_limit": 70000}}
+        st = {"realized_today": 0, "realized_week": 0, "open_risk": 0, "trades_today": 0, "positions": {}, "position_risk": {}}
+        with tempfile.TemporaryDirectory() as tmp:
+            old = os.environ.get("TRADER_DIR")
+            os.environ["TRADER_DIR"] = tmp
+            try:
+                res = m.check(o, dict(C.DEFAULT_CONFIG), C.parse_dt(DAY + " 12:00"), st, offline=True)
+            finally:
+                os.environ.pop("TRADER_DIR") if old is None else os.environ.__setitem__("TRADER_DIR", old)
+        self.assertTrue(any(r["check"] == "ценовые лимиты" and r["ok"] for r in res))
+
+    def test_futures_sessions_without_day_clearing(self):
+        cfg = dict(C.DEFAULT_CONFIG)
+        self.assertEqual(C.session_of("futures", C.parse_dt(DAY + " 14:02"), cfg), "main")
+        self.assertEqual(C.session_of("futures", C.parse_dt(DAY + " 18:55"), cfg), "main")
+        self.assertEqual(C.session_of("futures", C.parse_dt(DAY + " 23:55"), cfg), "clearing")
+
+    def test_dataqc(self):
+        import dataqc
+        now = C.parse_dt("2026-10-30")
+        good = [{"t": "2026-10-2%d 00:00" % i, "o": 10, "h": 11, "l": 9, "c": 10, "v": 5} for i in range(6, 10)]
+        self.assertEqual(dataqc.check_daily(good, now)["errors"], [])
+        self.assertTrue(dataqc.check_daily(good, C.parse_dt("2026-11-20"))["errors"])
+        self.assertTrue(dataqc.check_daily(good + [dict(good[-1], t="2026-10-30 00:00", h=1)], now)["errors"])
+        self.assertTrue(dataqc.check_daily(good + [good[-1]], now)["errors"])
+
+    def _broker_env(self, tmp):
+        env = {"TRADER_DIR": tmp, "TINVEST_SANDBOX_TOKEN": "dummy-token"}
+        os.makedirs(os.path.join(tmp, "state"), exist_ok=True)
+        with open(os.path.join(tmp, "config.json"), "w") as f:
+            json.dump({"tinvest_account_id": "sb-123"}, f)
+        return env
+
+    def test_reconcile_and_halt(self):
+        _write_tinvest_fixtures()
+        with tempfile.TemporaryDirectory() as tmp:
+            env = self._broker_env(tmp)
+            self.assertIn("сходится", run("moex-broker/broker.py", "reconcile", env=env).stdout)
+            with open(os.path.join(tmp, "portfolio.json"), "w") as f:
+                json.dump({"positions": {"SBER": {"lots": 2, "avg": 300, "lot_size": 10, "kind": "shares", "side": "long"}}}, f)
+            r = run("moex-broker/broker.py", "reconcile", env=env, ok=False)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("в учёте 20", r.stdout)
+            run("moex-broker/broker.py", "halt", "--reason", "тест", env=env)
+            self.assertTrue(os.path.exists(os.path.join(tmp, "HALT")))
+            run("moex-broker/broker.py", "resume", env=env)
+            self.assertFalse(os.path.exists(os.path.join(tmp, "HALT")))
+
+    def test_unknown_send_blocks_repeat(self):
+        sys.path.insert(0, os.path.join(SK, "moex-broker"))
+        import broker
+        s = {"events": [{"type": "sending", "fingerprint": "x"}, {"type": "unknown", "fingerprint": "x"}]}
+        self.assertTrue(broker.send_unknown(s, "x"))
+        s["events"].append({"type": "resolved", "fingerprint": "x"})
+        self.assertFalse(broker.send_unknown(s, "x"))
+        self.assertFalse(broker.send_unknown(s, "y"))
+
+
+class TestBonds(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.env = {"TRADER_DIR": self.tmp}
+
+    def test_irr_and_duration(self):
+        import bondcalc as B
+        from datetime import datetime
+        s = datetime(2026, 1, 1)
+        fl = [("2027-01-01", 1100.0)]
+        self.assertAlmostEqual(B.irr(fl, 1000.0, s), 0.10, places=6)
+        mac, mod = B.duration(fl, s, 0.10)
+        self.assertAlmostEqual(mac, 1.0, places=6)
+        self.assertAlmostEqual(mod, 1 / 1.1, places=6)
+
+    def test_net_yield_below_gross(self):
+        import bondcalc as B
+        from datetime import datetime
+        s = datetime(2026, 1, 1)
+        info = B.build_flows([{"coupondate": "2026-07-01", "value": 50}, {"coupondate": "2027-01-01", "value": 50}],
+                             [{"amortdate": "2027-01-01", "value": 1000}], [], s, 1000)
+        self.assertEqual(info["horizon_type"], "погашение")
+        g = B.irr(info["flows"], 960.0, s)
+        n = B.net_yield(info, 960.0, 0.0, s, 0.13, 0.0)
+        self.assertLess(n, g)
+        # налог 13% с купонов 100 и разницы 40 = 18,2 ₽ на 960 ₽ за год
+        self.assertAlmostEqual(g - n, 18.2 / 960, delta=0.003)
+
+    def test_put_offer_is_horizon_and_call_is_not(self):
+        import bondcalc as B
+        from datetime import datetime
+        s = datetime(2026, 1, 1)
+        am = [{"amortdate": "2030-01-01", "value": 1000}]
+        cp = [{"coupondate": "2027-01-01", "value": 100}, {"coupondate": "2028-01-01", "value": None}]
+        put = B.build_flows(cp, am, [{"offerdate": "2028-01-01", "offertype": "Оферта"}], s, 1000)
+        self.assertEqual(put["horizon"], "2028-01-01")
+        self.assertEqual(put["unknown"], 1)
+        call = B.build_flows(cp, am, [{"offerdate": "2028-01-01", "offertype": "Call"}], s, 1000)
+        self.assertEqual(call["horizon"], "2030-01-01")
+
+    def test_cli(self):
+        out = run("moex-bonds/bonds.py", "--now", DAY + " 12:00", "screen", env=self.env).stdout
+        self.assertIn("SU26999RMFS1", out)
+        self.assertNotIn("SU29999RMFS1", out)   # флоатер
+        self.assertNotIn("SU52999RMFS1", out)   # линкер
+        self.assertIn("SU29999RMFS1", run("moex-bonds/bonds.py", "screen", "--floaters", env=self.env).stdout)
+        with open(os.path.join(self.tmp, "config.json"), "w") as f:
+            json.dump({"key_rate": 14.0}, f)
+        c = run("moex-bonds/bonds.py", "--now", DAY + " 12:00", "show", "SU26999RMFS1", env=self.env).stdout
+        self.assertIn("после налога", c)
+        self.assertIn("рейтинг", c)
+        lad = run("moex-bonds/bonds.py", "--now", DAY + " 12:00", "ladder", "--sum", "30000", "--rungs", "3", env=self.env).stdout
+        self.assertIn("SU26999RMFS1", lad)
+
+
+class TestPortfolio(unittest.TestCase):
+    def test_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {"TRADER_DIR": tmp}
+            with open(os.path.join(tmp, "config.json"), "w") as f:
+                json.dump({"account_size": 100000}, f)
+            with open(os.path.join(tmp, "portfolio.json"), "w") as f:
+                json.dump({"cash": 50000, "positions": {
+                    "SBER": {"lots": 10, "avg": 300, "lot_size": 10, "kind": "shares", "side": "long", "stop": 290},
+                    "GAZP": {"lots": 2, "avg": 130, "lot_size": 10, "kind": "shares", "side": "long"}}}, f)
+            out = run("moex-portfolio/review.py", "--offline", "--now", DAY + " 12:00", env=env).stdout
+            self.assertIn("акции", out)
+            self.assertIn("Без стопа: GAZP", out)
+            self.assertIn("февраль–март 2022", out)
+            self.assertIn("-10 399", out.replace("\u00a0", " ").replace("−", "-"))
+
+
 def _write_tinvest_fixtures():
     P = "tinkoff.public.invest.api.contract.v1."
 
@@ -586,6 +723,8 @@ def _write_tinvest_fixtures():
                                                   "lotsRequested": "6", "lotsExecuted": "6",
                                                   "averagePositionPrice": {"currency": "rub", "units": "440", "nano": 950000000}})
     w(sb, "SandboxService_PostSandboxStopOrder", {"stopOrderId": "stop-1"})
+    w(sb, "OperationsService_GetSandboxPortfolio", {"positions": []})
+    w(sb, "SandboxService_GetSandboxPortfolio", {"positions": []})
     w(sb, "SandboxService_GetSandboxAccounts", {"accounts": [{"id": "sb-123", "name": "moex-trader"}]})
 
 

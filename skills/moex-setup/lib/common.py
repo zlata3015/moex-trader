@@ -47,7 +47,7 @@ def save_json(path, data):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2, default=str)
     os.replace(tmp, path)
     return path
 
@@ -71,12 +71,12 @@ DEFAULT_CONFIG = {
     "corr_group_risk_mult": 1.0,     # общий риск связанных позиций — не больше N рисков одной сделки
     "issuer_limit_pct": 5,           # на одного корпоративного эмитента облигаций не больше N% счёта
     "max_trades_per_day": 5,
-    "max_open_positions": 3,
-    "max_position_pct": 30,          # % счёта в одной позиции (для фьючерсов — по ГО)
+    "max_open_positions": 5,
+    "max_position_pct": 20,          # % счёта в одной позиции (для фьючерсов — по ГО)
     "min_reward_risk": 2.0,
     "min_turnover_rub": 100000000,   # ₽, минимальный дневной оборот бумаги для сделки
-    "fee_pct": 0.05,                 # % комиссия брокера за сторону (тариф «Трейдер» ~0,05%)
-    "futures_fee_rub": 2.0,          # ₽ за контракт за сторону (брокер + биржа, примерно)
+    "fee_pct": 0.05,                 # % комиссия брокера за сторону (тариф «Трейдер»: 0,05%)
+    "futures_fee_pct": 0.04,         # % от стоимости контракта за сторону (тариф «Трейдер»: 0,04%, доп. список 0,08%)
     "slippage_ticks": 1,             # проскальзывание в шагах цены на каждую сторону
     "min_target_cost_multiple": 4,   # цель должна быть дальше 4 издержек сделки туда-обратно
     "regime_filter": True,           # лонг только если IMOEX выше EMA50 дневной (свинг) / не в сильном падении
@@ -96,15 +96,20 @@ DEFAULT_CONFIG = {
     "paper": True,                   # песочница Т-Инвестиций по умолчанию
     "tinvest_account_id": "",        # счёт Т-Инвестиций (или песочницы)
     "data_source": "auto",           # auto | iss | tinvest
+    "max_data_age_days": 5,          # свечи старше стольких календарных дней блокируют новую сделку
+    "reconcile_ignore": [],          # тикеры брокера вне учёта набора, например фонд денежного рынка
+    "tax_pct": 13,                   # НДФЛ для расчёта доходности облигаций после налога
+    "fund_spread_pct": 1.0,          # фонд денежного рынка: ключевая ставка минус столько п.п.
     "sessions": {
-        # Время МСК. С 14.09.2026 основная сессия фондового рынка 09:00–19:00,
-        # утренняя 06:50–09:00, вечерняя 19:00–23:50. Проверьте актуальность на moex.com.
+        # Время МСК. С 14.09.2026 основная сессия 09:00–19:00, утренняя 06:50–09:00, вечерняя 19:00–23:50.
+        # Срочный рынок с 23.03.2026 без дневных клирингов: основной клиринг 23:50–00:30.
+        # Проверьте актуальность на moex.com.
         "shares":   {"morning": ["06:50", "09:00"], "main": ["09:00", "18:50"], "evening": ["19:00", "23:50"],
                       "auction_open_min": 10, "auction_close": ["18:40", "18:50"]},
         "bonds":    {"main": ["09:00", "18:50"], "evening": ["19:00", "23:50"], "auction_open_min": 10},
         "currency": {"main": ["08:50", "19:00"], "evening": ["19:00", "23:50"], "auction_open_min": 10},
-        "futures":  {"morning": ["07:00", "09:00"], "main": ["09:00", "18:50"], "evening": ["19:05", "23:50"],
-                      "clearing": [["14:00", "14:05"], ["18:50", "19:05"]], "auction_open_min": 0},
+        "futures":  {"morning": ["07:00", "09:00"], "main": ["09:00", "19:00"], "evening": ["19:00", "23:50"],
+                      "clearing": [["23:50", "24:00"]], "auction_open_min": 0},
         "index":    {"main": ["09:00", "18:50"]},
     },
     "orb_start": "09:00",            # от какого времени считать диапазон открытия
@@ -134,6 +139,15 @@ def money_limit(value, account_size):
     if isinstance(value, str) and value.strip().endswith("%"):
         return account_size * float(value.strip()[:-1].replace(",", ".")) / 100.0
     return float(value)
+
+
+def halted():
+    """Аварийная остановка: файл trader/HALT запрещает новые заявки. Возвращает причину или None."""
+    p = tpath("HALT")
+    if not os.path.exists(p):
+        return None
+    with open(p, encoding="utf-8") as f:
+        return f.read().strip() or "без указания причины"
 
 
 # ---------------------------------------------------------------- время
@@ -210,7 +224,7 @@ NET_HINT = (
 )
 
 
-def http(url, params=None, data=None, headers=None, timeout=25, retries=2, method=None):
+def http(url, params=None, data=None, headers=None, timeout=25, retries=4, method=None):
     fx = os.environ.get("MOEX_TRADER_FIXTURES")
     if fx:
         for ext in (".xml", ".txt"):
@@ -247,7 +261,7 @@ def http(url, params=None, data=None, headers=None, timeout=25, retries=2, metho
         except (urllib.error.URLError, OSError) as e:
             last = e
             if attempt < retries:
-                time.sleep(1.0 * (attempt + 1))
+                time.sleep(1.5 * (attempt + 1))
                 continue
     raise NetError(NET_HINT % urllib.parse.urlsplit(url).netloc + " (%s)" % last)
 

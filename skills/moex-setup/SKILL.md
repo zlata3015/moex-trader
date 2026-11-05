@@ -33,7 +33,9 @@ python3 "${CLAUDE_SKILL_DIR}/setup.py" set max_loss_per_trade '"1%"'
 | corr_threshold, corr_group_risk_mult, issuer_limit_pct | связанные позиции считаются одной; лимит на эмитента облигаций |
 | max_trades_per_day, max_open_positions, max_position_pct | лимиты активности и концентрации |
 | min_reward_risk, min_target_cost_multiple | минимум прибыль/риск и «до цели не меньше N издержек» |
-| fee_pct, futures_fee_rub, slippage_ticks | комиссия за сторону, ₽ за контракт, проскальзывание в шагах цены |
+| fee_pct, futures_fee_pct, slippage_ticks | комиссия за сторону, % от стоимости контракта, проскальзывание в шагах цены |
+| max_data_age_days, reconcile_ignore | возраст свечей, после которого новая сделка блокируется; тикеры брокера вне учёта |
+| tax_pct, fund_spread_pct | НДФЛ и разница фонда с ключевой ставкой для расчёта облигаций |
 | require_trend_alignment, trail_atr, max_hold_days_position | сделки только по тренду М/Н/Д, подтягиваемый стоп в ATR, срок позиции |
 | regime_filter, require_backtest | фильтр режима рынка (IMOEX), запрет сетапов без плюса на истории |
 | allow_short, allow_futures, allow_bonds, allow_currency, allow_evening_session | что разрешено |
@@ -44,7 +46,7 @@ python3 "${CLAUDE_SKILL_DIR}/setup.py" set max_loss_per_trade '"1%"'
 Основной способ (по тренду, на дни-недели): `moex-trend scan` → `moex-trend analyze --plan` → `moex-budget` → `moex-risk` → `moex-broker` → каждый вечер `moex-exit update`.
 Внутри дня: `moex-macro` (фон) → `moex-scanner` → `moex-ta` → `moex-news` → `moex-entry` → `moex-exit` → `moex-timemachine` → `moex-budget` → `moex-risk` → `moex-broker` → `moex-alerts` → `moex-journal`.
 До реальных денег: `moex-backtest` — проверить, что выбранная стратегия в плюсе после издержек.
-Фундамент: `moex-analyst`.
+Фундамент: `moex-analyst`. Облигации: `moex-bonds`. Весь портфель: `moex-portfolio`.
 
 ## Общие правила
 

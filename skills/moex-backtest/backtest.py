@@ -105,7 +105,7 @@ def cmd_single(a, strategy):
     print("Бэктест %s · %s · %s" % (a.symbol, "пробой диапазона открытия" if strategy == "orb" else S.SETUPS[a.setup], span))
     print("Параметры: " + ", ".join("%s=%s" % kv for kv in p.items()))
     print("Издержки: комиссия %s%% за сторону + %d шаг(а) проскальзывания" % (C.num(cfg["fee_pct"], 3), cfg["slippage_ticks"])
-          if spec["kind"] != "futures" else "Издержки: %s за контракт за сторону + проскальзывание" % C.rub(cfg["futures_fee_rub"]))
+          if spec["kind"] != "futures" else "Издержки: %s%% от стоимости контракта за сторону + проскальзывание" % C.num(cfg["futures_fee_pct"], 2))
     print(fmt_stats(st, risk_rub))
     if tr:
         avg_cost = sum(t["cost_r"] for t in tr) / len(tr)

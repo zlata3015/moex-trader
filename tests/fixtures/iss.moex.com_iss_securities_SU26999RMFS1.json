@@ -1,0 +1,1 @@
+{"boards": {"columns": ["secid", "boardid", "engine", "market", "is_primary", "is_traded"], "data": [["SU26999RMFS1", "TQOB", "stock", "bonds", 1, 1]]}, "description": {"columns": ["name", "value"], "data": [["NAME", "ОФЗ 26999"], ["TYPENAME", "ОФЗ"], ["ISQUALIFIEDINVESTORS", "0"], ["HASDEFAULT", "0"]]}}

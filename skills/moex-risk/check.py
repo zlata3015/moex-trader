@@ -29,6 +29,8 @@ def check(o, cfg, now, st, offline=False):
     if o.get("closing"):
         add(True, "закрытие", "заявка закрывает позицию — снижает риск, лимиты не применяются")
         return res
+    why = C.halted()
+    add(why is None, "аварийная остановка", "новые заявки запрещены: %s" % why if why else "не включена")
     long_ = o["direction"] == "long"
     account = cfg["account_size"]
     max_loss = C.money_limit(cfg["max_loss_per_trade"], account)
@@ -76,7 +78,7 @@ def check(o, cfg, now, st, offline=False):
         losing = (o["entry"] < p["avg"]) if long_ else (o["entry"] > p["avg"])
         if same:
             add(not losing, "усреднение", "уже есть позиция по %s, средняя %s — %s" % (
-                C.px(p["avg"]), o["symbol"], "докупка в убытке ЗАПРЕЩЕНА" if losing else "добавление в прибыли"))
+                o["symbol"], C.px(p["avg"]), "докупка в убытке ЗАПРЕЩЕНА" if losing else "добавление в прибыли"))
     # коррелирующие позиции считаем как одну
     group = riskbook.correlated_group(o["symbol"], [s for s in pos if s != o["symbol"]], cfg, offline, now)
     if group:
@@ -140,12 +142,23 @@ def check(o, cfg, now, st, offline=False):
     if k == "futures":
         hl, ll = sp.get("high_limit"), sp.get("low_limit")
         if hl and ll:
-            add(ll <= min(o["stop"], o["target"]) and max(o["stop"], o["target"]) <= hl, "ценовые лимиты",
-                "коридор биржи %s – %s" % (C.px(ll), C.px(hl)))
+            lv = [x for x in (o["stop"], o.get("target")) if x is not None]
+            add(ll <= min(lv) and max(lv) <= hl, "ценовые лимиты", "коридор биржи %s – %s" % (C.px(ll), C.px(hl)))
         ltd = sp.get("last_trade_date")
         if ltd:
             days = (datetime.strptime(ltd, "%Y-%m-%d") - now).days
             add(days >= 2, "экспирация", "до экспирации %d дн." % days)
+    # свежесть и качество свечей: на устаревших данных новая сделка не открывается
+    if not offline and k != "bonds" and k != "corp":
+        try:
+            import dataqc
+            bars = moex.candles(o["symbol"], "1d", days=120, end=now, kind=k, source="iss")
+            q = dataqc.check_daily(bars, now, cfg.get("max_data_age_days", 5))
+            add(not q["errors"], "данные", "; ".join(q["errors"]) if q["errors"] else "свечи свежие, дефектов нет")
+            for w in q["warnings"]:
+                add(True, "данные", w, warn=True)
+        except C.NetError as e:
+            add(False, "данные", "не удалось получить свечи: %s" % str(e)[:80])
     # дивидендный гэп для свинга
     if o["mode"] == "swing" and k in ("shares",) and long_ and not offline:
         try:

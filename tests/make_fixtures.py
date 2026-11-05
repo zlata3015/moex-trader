@@ -231,6 +231,29 @@ def main():
     # «Si» без номера — нет такого secid: пустые boards -> поиск ближайшего фьючерса
     save("%ssecurities_Si" % ISS, {"boards": {"columns": ["secid"], "data": []}})
 
+    # облигации: режимы TQOB и TQCB, поток одного выпуска
+    bcols = ["SECID", "SHORTNAME", "FACEVALUE", "FACEUNIT", "MATDATE", "ACCRUEDINT", "SETTLEDATE", "BONDTYPE", "BONDSUBTYPE",
+             "COUPON_DETAILS", "LISTLEVEL", "OFFERDATE", "PUTOPTIONDATE", "PREVWAPRICE", "LOTVALUE"]
+    bmd = ["SECID", "LAST", "OFFER", "VALTODAY_RUR"]
+    by = ["SECID", "PRICE", "EFFECTIVEYIELD", "DURATION", "GSPREADBP", "YIELDDATETYPE"]
+    fixed = "Фиксированный с известными купонами"
+    save("%sengines_stock_markets_bonds_boards_TQOB_securities" % ISS, {
+        "securities": {"columns": bcols, "data": [
+            ["SU26999RMFS1", "ОФЗ 26999", 1000, "SUR", "2028-10-30", 20.0, "2026-10-31", "Облигация с фиксированным (известным) купоном", "До погашения", fixed, 1, None, None, 95.0, 1000],
+            ["SU29999RMFS1", "ОФЗ 29999", 1000, "SUR", "2030-10-30", 5.0, "2026-10-31", "Облигация с плавающим купоном", "До погашения", "Ключевая ставка", 1, None, None, 99.0, 1000],
+            ["SU52999RMFS1", "ОФЗ 52999", 1000, "SUR", "2030-10-30", 5.0, "2026-10-31", "Линкер/облигация с индексируемым номиналом", "До погашения", "ИПЦ", 1, None, None, 80.0, 1000]]},
+        "marketdata": {"columns": bmd, "data": [["SU26999RMFS1", 95.0, 95.0, 9e7], ["SU29999RMFS1", 99.0, 99.1, 9e7], ["SU52999RMFS1", 80.0, 80.1, 9e7]]},
+        "marketdata_yields": {"columns": by, "data": [["SU26999RMFS1", 95.0, 12.9, 660, 0, "MATDATE"], ["SU29999RMFS1", 99.0, 15.0, 100, 0, "MATDATE"], ["SU52999RMFS1", 80.0, 9.0, 1300, 0, "MATDATE"]]}})
+    save("%sengines_stock_markets_bonds_boards_TQCB_securities" % ISS, {
+        "securities": {"columns": bcols, "data": []}, "marketdata": {"columns": bmd, "data": []}, "marketdata_yields": {"columns": by, "data": []}})
+    save("%ssecurities_SU26999RMFS1" % ISS, {
+        "boards": {"columns": ["secid", "boardid", "engine", "market", "is_primary", "is_traded"], "data": [["SU26999RMFS1", "TQOB", "stock", "bonds", 1, 1]]},
+        "description": {"columns": ["name", "value"], "data": [["NAME", "ОФЗ 26999"], ["TYPENAME", "ОФЗ"], ["ISQUALIFIEDINVESTORS", "0"], ["HASDEFAULT", "0"]]}})
+    save("%ssecurities_SU26999RMFS1_bondization" % ISS, {
+        "coupons": {"columns": ["coupondate", "value", "value_rub"], "data": [[d, 50.0, 50.0] for d in ("2027-04-30", "2027-10-30", "2028-04-30", "2028-10-30")]},
+        "amortizations": {"columns": ["amortdate", "value", "value_rub"], "data": [["2028-10-30", 1000, 1000]]},
+        "offers": {"columns": ["offerdate", "offertype"], "data": []}})
+
     # дивиденды
     save("%ssecurities_SBER_dividends" % ISS, {"dividends": {
         "columns": ["secid", "isin", "registryclosedate", "value", "currencyid"],

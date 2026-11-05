@@ -8,9 +8,7 @@ def per_unit(spec, price, cfg=None):
     step = spec.get("minstep") or 0.01
     slip = 2 * cfg.get("slippage_ticks", 1) * step
     if spec.get("kind") == "futures":
-        sp = spec.get("stepprice") or step
-        fee_pts = 2 * cfg.get("futures_fee_rub", 2.0) / (sp / step)
-        return fee_pts + slip
+        return price * cfg.get("futures_fee_pct", 0.04) / 100 * 2 + slip
     return price * cfg.get("fee_pct", 0.05) / 100 * 2 + slip
 
 

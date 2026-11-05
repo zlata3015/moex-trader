@@ -9,6 +9,8 @@
   broker.py flatten --symbol SBER             заявка на закрытие позиции (тоже через «да»)
   broker.py fill --symbol SBER --side buy --lots 6 --price 440.95    ручная запись исполнения (любой брокер)
   broker.py accounts | sandbox-open --amount 100000 | portfolio | log
+  broker.py reconcile                         сверить учёт с фактическими позициями на счёте
+  broker.py halt --reason "..." | resume      аварийная остановка новых заявок и снятие остановки
 """
 import argparse
 import os
@@ -126,18 +128,33 @@ def cmd_place(a):
         C.die("Заявка не прошла moex-risk сегодня (или проверки не было). Отправка запрещена.")
     if not yes_ok:
         C.die("Нет вашего «да» для этой заявки. Отправка запрещена.")
+    why = C.halted()
+    if why and not o.get("closing"):
+        C.die("Аварийная остановка: %s. Новые заявки запрещены, снять: broker.py resume." % why)
     if any(e.get("type") == "placed" and e.get("fingerprint") == o["fingerprint"] for e in s["events"]):
         C.die("Эта заявка уже отправлялась. Повторно не отправляю.")
+    if send_unknown(s, o["fingerprint"]):
+        C.die("Результат прошлой отправки неизвестен (сбой связи). Проверьте заявку в приложении и выполните "
+              "broker.py reconcile. Повторно не отправляю.")
     sandbox = bool(cfg["paper"])
     acc = account_id(a, sandbox)
+    if not o.get("closing"):
+        d = reconcile_diff(acc, sandbox, cfg)
+        if d:
+            C.die("Учёт расходится со счётом: %s. Новые заявки запрещены, пока не сойдётся: broker.py reconcile." % "; ".join(d))
     ins = tinvest.instrument(o["symbol"], o["kind"])
     price = C.round_step(o["entry"], ins.get("minstep") or (o.get("spec") or {}).get("minstep") or 0.01)
-    oid = str(uuid.uuid4())
+    # Ключ заявки выводится из её отпечатка: повторная отправка той же заявки у брокера не задублируется.
+    oid = str(uuid.uuid5(uuid.NAMESPACE_URL, "moex-trader:" + o["fingerprint"]))
+    log_event(s, {"type": "sending", "fingerprint": o["fingerprint"], "symbol": o["symbol"], "order_id": oid}, now)
     try:
         r = tinvest.post_order(acc, o["symbol"], o["side"], o["lots"], o["type"], price, o["kind"], sandbox, oid)
     except C.NetError as e:
-        log_event(s, {"type": "failed", "fingerprint": o["fingerprint"], "symbol": o["symbol"], "error": str(e)[:300]}, now)
-        C.die("Брокер отклонил заявку: %s" % e)
+        rejected = getattr(e, "status", None) is not None
+        log_event(s, {"type": "failed" if rejected else "unknown", "fingerprint": o["fingerprint"], "symbol": o["symbol"],
+                      "order_id": oid, "error": str(e)[:300]}, now)
+        C.die(("Брокер отклонил заявку: %s" if rejected else
+               "Нет ответа брокера, заявка могла дойти. Проверьте её и выполните broker.py reconcile: %s") % e)
     log_event(s, {"type": "placed", "fingerprint": o["fingerprint"], "symbol": o["symbol"], "kind": o["kind"], "side": o["side"],
                   "lots": o["lots"], "price": price, "order_id": r.get("orderId", oid), "sandbox": sandbox,
                   "max_loss": o.get("max_loss", 0), "risk_rub": o.get("max_loss_at_stop"), "stop": o.get("stop"),
@@ -148,6 +165,76 @@ def cmd_place(a):
         r.get("lotsExecuted", "?"), r.get("lotsRequested", o["lots"])))
     if not o.get("closing"):
         print("После исполнения выставьте защиту: broker.py protect --index %d" % a.index)
+
+
+def send_unknown(s, fp):
+    """True, если последняя отправка этой заявки не получила ответа брокера."""
+    ev = [e["type"] for e in s["events"] if e.get("fingerprint") == fp and e.get("type") in ("sending", "placed", "failed", "unknown", "resolved")]
+    return bool(ev) and ev[-1] in ("sending", "unknown")
+
+
+def broker_positions(acc, sandbox):
+    """Фактические позиции на счёте: {тикер: (штук, тип)}, без денег."""
+    import tinvest
+    out = {}
+    for x in tinvest.portfolio(acc, sandbox).get("positions", []):
+        typ = x.get("instrumentType")
+        if typ == "currency":
+            continue
+        out[x.get("ticker") or x.get("figi")] = (tinvest.q2f(x.get("quantity")) or 0, typ)
+    return out
+
+
+def reconcile_diff(acc, sandbox, cfg):
+    """Расхождения между учётом набора и счётом. Пустой список — всё сходится."""
+    pf = C.load_json(C.tpath("portfolio.json"), {}) or {}
+    local = {}
+    for sym, p in (pf.get("positions") or {}).items():
+        if p.get("lots"):
+            n = p["lots"] * (1 if p.get("kind") in ("futures", "bonds", "corp") else (p.get("lot_size") or 1))
+            local[sym] = -n if p.get("side") == "short" else n
+    fact = {k: v[0] for k, v in broker_positions(acc, sandbox).items()}
+    skip = set(cfg.get("reconcile_ignore") or [])
+    out = []
+    for sym in sorted((set(local) | set(fact)) - skip):
+        a, b = local.get(sym, 0), fact.get(sym, 0)
+        if abs(a - b) > 1e-6:
+            out.append("%s: в учёте %s, на счёте %s" % (sym, C.num(a, 0), C.num(b, 0)))
+    return out
+
+
+def cmd_reconcile(a):
+    now = C.now_msk(a.now)
+    cfg = C.config()
+    sandbox = bool(cfg["paper"])
+    d = reconcile_diff(account_id(a, sandbox), sandbox, cfg)
+    s = state()
+    if d:
+        print("Расхождения со счётом:")
+        for x in d:
+            print("  ✗ " + x)
+        print("Запишите недостающие сделки через fill. Чужие бумаги внесите в reconcile_ignore.")
+        sys.exit(1)
+    unknown = {e["fingerprint"] for e in s["events"] if e.get("type") in ("sending", "unknown") and send_unknown(s, e["fingerprint"])}
+    for fp in unknown:
+        log_event(s, {"type": "resolved", "fingerprint": fp}, now)
+    print("Учёт сходится со счётом.")
+
+
+def cmd_halt(a):
+    now = C.now_msk(a.now)
+    with open(C.tpath("HALT"), "w", encoding="utf-8") as f:
+        f.write("%s, %s" % (C.fmt_dt(now), a.reason))
+    log_event(state(), {"type": "halt", "reason": a.reason}, now)
+    print("Аварийная остановка включена. Новые заявки запрещены, закрытие позиций разрешено.")
+
+
+def cmd_resume(a):
+    p = C.tpath("HALT")
+    if os.path.exists(p):
+        os.remove(p)
+    log_event(state(), {"type": "resume"}, C.now_msk(a.now))
+    print("Аварийная остановка снята.")
 
 
 def last_placed(s, fp):
@@ -257,7 +344,7 @@ def record_fill(s, symbol, kind, side, lots, price, now, order=None, order_id=No
                                           "lot_size": lot_size or (order or {}).get("lot_size", 1), "side": "long"}
     spec = dict((order or {}).get("spec") or {}, kind=kind, lot=pos["lot_size"])
     rpp = costs.rub_per_point(spec)
-    fee = fee if fee is not None else (cfg["futures_fee_rub"] * lots if kind == "futures" else price * rpp * lots * cfg["fee_pct"] / 100)
+    fee = fee if fee is not None else (price * rpp * lots * cfg["futures_fee_pct" if kind == "futures" else "fee_pct"] / 100)
     signed = lots if side == "buy" else -lots
     cur = pos["lots"] if pos.get("side", "long") == "long" else -pos["lots"]
     pnl = None
@@ -399,6 +486,9 @@ def main():
     p = sub.add_parser("sandbox-open"); p.add_argument("--amount", type=float, default=100000); p.set_defaults(fn=cmd_sandbox_open)
     p = sub.add_parser("portfolio"); p.add_argument("--account"); p.set_defaults(fn=cmd_portfolio)
     p = sub.add_parser("log"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_log)
+    p = sub.add_parser("reconcile"); p.add_argument("--account"); p.set_defaults(fn=cmd_reconcile)
+    p = sub.add_parser("halt"); p.add_argument("--reason", required=True); p.set_defaults(fn=cmd_halt)
+    sub.add_parser("resume").set_defaults(fn=cmd_resume)
     a = ap.parse_args()
     try:
         a.fn(a)

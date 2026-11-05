@@ -1,0 +1,1 @@
+{"coupons": {"columns": ["coupondate", "value", "value_rub"], "data": [["2027-04-30", 50.0, 50.0], ["2027-10-30", 50.0, 50.0], ["2028-04-30", 50.0, 50.0], ["2028-10-30", 50.0, 50.0]]}, "amortizations": {"columns": ["amortdate", "value", "value_rub"], "data": [["2028-10-30", 1000, 1000]]}, "offers": {"columns": ["offerdate", "offertype"], "data": []}}
