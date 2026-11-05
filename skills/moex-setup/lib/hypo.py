@@ -140,6 +140,7 @@ def legs(calendar, asset, money, pos):
 
 def evaluate(calendar, asset, key_rate, signal, since, periods, cost=0.001, spread=1.0, money=None):
     """Все показатели гипотезы вида «в рынке по сигналу, иначе деньги». Проценты и п.п."""
+    custom_base = money is not None  # база сравнения вместо денег: просадка сравнивается с ней
     money = money or money_index(calendar, key_rate, spread)
     i0 = next(i for i, d in enumerate(calendar) if d >= since)
     cal = calendar[i0:]
@@ -180,7 +181,7 @@ def evaluate(calendar, asset, key_rate, signal, since, periods, cost=0.001, spre
         "money_after_tax": round(after_tax_annual(d1, r_money), 2),
         "max_dd": round(max_drawdown(r), 2),
         "hold_annual": round(annual(cal, r_asset), 2),
-        "hold_dd": round(max_drawdown(r_asset), 2),
+        "hold_dd": round(max_drawdown(r_money if custom_base else r_asset), 2),
         "in_market": round(sum(pos) / len(pos) * 100, 1),
         "switches": sum(1 for i in range(1, len(pos)) if pos[i] != pos[i - 1]),
         "legs": len(lg),

@@ -919,9 +919,35 @@
    "kind": "rare",
    "source": "список GPT, ноябрь 2026",
    "prereg": true,
-   "status": "planned",
-   "result": null,
-   "reasons": []
+   "status": "candidate",
+   "result": {
+    "since": "2014-03-03",
+    "till": "2026-11-03",
+    "annual": 9.65,
+    "money": 5.49,
+    "premium": 4.16,
+    "after_tax": 8.4,
+    "money_after_tax": 4.44,
+    "max_dd": -13.48,
+    "hold_annual": 8.48,
+    "hold_dd": -35.68,
+    "in_market": 36.5,
+    "switches": 8,
+    "legs": 4,
+    "legs_won": 3,
+    "p": 0.091,
+    "periods": {
+     "2014-2019": 2.79,
+     "2020-2022": 5.21,
+     "2023-2026": 5.33
+    },
+    "premium_late": 2.46,
+    "premium_cost2": 4.02
+   },
+   "reasons": [
+    "прошла порог кандидата, до подтверждения: p <= 0.0018, все периоды, заходов 4, лучше денег 3"
+   ],
+   "attempts": 1
   },
   {
    "id": "G03",
@@ -1078,6 +1104,90 @@
    "status": "planned",
    "result": null,
    "reasons": []
+  },
+  {
+   "id": "G16",
+   "claim": "При повышении ставки короткие ОФЗ лучше денег",
+   "family": "bonds-rate",
+   "rule": "Сигнал: последнее изменение ставки вверх. RUGBITR1Y по сигналу, иначе деньги",
+   "kind": "rare",
+   "source": "уточнение G02, запись до расчёта",
+   "prereg": true,
+   "status": "rejected",
+   "result": {
+    "since": "2014-03-03",
+    "till": "2026-11-03",
+    "annual": 8.81,
+    "money": 10.03,
+    "premium": -1.22,
+    "after_tax": 7.68,
+    "money_after_tax": 8.74,
+    "max_dd": -3.75,
+    "hold_annual": 8.48,
+    "hold_dd": -3.75,
+    "in_market": 36.5,
+    "switches": 8,
+    "legs": 4,
+    "legs_won": 1,
+    "p": 0.999,
+    "periods": {
+     "2014-2019": -0.41,
+     "2020-2022": -1.54,
+     "2023-2026": -2.24
+    },
+    "premium_late": -0.9,
+    "premium_cost2": -1.29
+   },
+   "reasons": [
+    "премия к деньгам -1.22",
+    "p=0.999 выше 0.20",
+    "плюс в 0 периодах из 3",
+    "задержка на месяц -0.90",
+    "двойные издержки -1.29"
+   ],
+   "attempts": 1
+  },
+  {
+   "id": "G17",
+   "claim": "Вращение: при повышении 1 год, иначе 5+ лет лучше денег",
+   "family": "bonds-rate",
+   "rule": "Сигнал: последнее изменение ставки вверх — RUGBITR1Y, иначе RUGBITR5+, сравнение с деньгами",
+   "kind": "rare",
+   "source": "уточнение G02, запись до расчёта",
+   "prereg": true,
+   "status": "rejected",
+   "result": {
+    "since": "2014-03-03",
+    "till": "2026-11-03",
+    "annual": 9.65,
+    "money": 10.03,
+    "premium": -0.38,
+    "after_tax": 8.4,
+    "money_after_tax": 8.74,
+    "max_dd": -13.48,
+    "hold_annual": 9.65,
+    "hold_dd": -13.48,
+    "in_market": 100.0,
+    "switches": 0,
+    "legs": 0,
+    "legs_won": 0,
+    "p": 0.515,
+    "periods": {
+     "2014-2019": 3.92,
+     "2020-2022": -1.69,
+     "2023-2026": -5.93
+    },
+    "premium_late": -0.38,
+    "premium_cost2": -0.38
+   },
+   "reasons": [
+    "премия к деньгам -0.38",
+    "p=0.515 выше 0.20",
+    "плюс в 1 периодах из 3",
+    "задержка на месяц -0.38",
+    "двойные издержки -0.38"
+   ],
+   "attempts": 1
   }
  ]
 }

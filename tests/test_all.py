@@ -530,6 +530,14 @@ class TestHypotheses(unittest.TestCase):
         self.assertEqual(r["max_dd"], 0)
         self.assertEqual(r["hold_dd"], 0)
 
+    def test_evaluate_custom_base(self):
+        cal = ["%d-%02d-15" % (y, m) for y in range(2015, 2019) for m in range(1, 13)]
+        base = [100.0 * (0.99 if i > 3 and i % 2 else 1.0) for i in range(len(cal))]  # первые дни сигнал ещё не исполнен
+        asset = [100.0] * len(cal)
+        r = self.H.evaluate(cal, asset, [(cal[0], 1.0)], [(cal[0], 1.0)], cal[0], [("all", "2015", "2018")], cost=0, money=base)
+        self.assertEqual(r["max_dd"], 0)
+        self.assertEqual(r["hold_dd"], -1.0)
+
     def test_registry_file_valid(self):
         reg = self.H.load(os.path.join(SK, "moex-hypotheses", "registry.json"))
         self.assertEqual(self.H.tradable(reg), [])

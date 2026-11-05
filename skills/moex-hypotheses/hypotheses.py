@@ -5,6 +5,7 @@
   hypotheses.py show B01                                         правило, результат, причины
   hypotheses.py add G01 --claim "..." --family equities --rule "..." [--kind frequent] [--source "..."]
   hypotheses.py check B01 --asset a.csv --signal s.csv --key key.csv --since 2015-01-01   проверить и записать
+  hypotheses.py check G02 ... --base long.csv --cost 0.2         сравнить не с деньгами, а с другим активом
   hypotheses.py signals                                          только сигналы, допущенные к рекомендациям
   hypotheses.py promote B01 sandbox                              следующий этап после confirmed
   hypotheses.py run-bonds [--dry]                                воспроизвести проверку облигаций
@@ -69,7 +70,13 @@ def cmd_check(a):
     reg = H.load(REG)
     asset = read_series(a.asset)
     cal = [d for d, _ in asset]
-    m = H.evaluate(cal, [v for _, v in asset], read_series(a.key), read_series(a.signal), a.since, PERIODS, cost=a.cost / 100)
+    base = None
+    if a.base:
+        base = H.step_values(cal, read_series(a.base))
+        i = next(j for j, v in enumerate(base) if v is not None)
+        base[:i] = [base[i]] * i
+    m = H.evaluate(cal, [v for _, v in asset], read_series(a.key), read_series(a.signal), a.since, PERIODS,
+                   cost=a.cost / 100, money=base)
     try:
         h = H.record(reg, a.id, m)
     except ValueError as e:
@@ -113,6 +120,7 @@ def main():
     p.set_defaults(f=cmd_add)
     p = sub.add_parser("check"); p.add_argument("id"); p.add_argument("--asset", required=True)
     p.add_argument("--signal", required=True); p.add_argument("--key", required=True)
+    p.add_argument("--base", help="ряд сравнения вместо денег: вне сигнала держим его")
     p.add_argument("--since", default="2015-01-01"); p.add_argument("--cost", type=float, default=0.1, help="%% на сторону")
     p.set_defaults(f=cmd_check)
     p = sub.add_parser("signals"); p.set_defaults(f=cmd_signals)
