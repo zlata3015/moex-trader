@@ -475,6 +475,87 @@ class TestRank(unittest.TestCase):
         self.assertTrue(c["EMA20"]); self.assertFalse(s["EMA20"])
 
 
+class TestProfiles(unittest.TestCase):
+    """Две стратегии: настройки поверх общих, выбор на месяц, раздельный учёт."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.old = os.environ.get("TRADER_DIR")
+        os.environ["TRADER_DIR"] = self.tmp
+        self.month = C.now_msk().strftime("%Y-%m")
+
+    def tearDown(self):
+        os.environ.pop("TRADER_DIR") if self.old is None else os.environ.__setitem__("TRADER_DIR", self.old)
+
+    def pick(self, name, month=None):
+        C.save_json(C.tpath("strategy.json"), {month or self.month: name})
+
+    def risk(self):
+        spec = importlib.util.spec_from_file_location("risk_prof", os.path.join(SK, "moex-risk", "check.py"))
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        return m
+
+    def test_default_is_moderate(self):
+        cfg = C.config()
+        self.assertEqual(cfg["strategy"], "moderate")
+        self.assertFalse(cfg["allow_short"])
+        self.assertEqual(cfg["max_loss_per_trade"], "0.5%")
+
+    def test_risky_overrides_and_previous_month_continues(self):
+        self.pick("risky", "2000-01")
+        cfg = C.config()
+        self.assertEqual((cfg["strategy"], cfg["max_open_positions"], cfg["dd_stop_pct"]), ("risky", 1, 30))
+        self.assertTrue(cfg["allow_short"])
+        self.assertTrue(cfg["paper"])
+
+    def order(self, **k):
+        o = {"direction": "short", "kind": "shares", "symbol": "SBER", "lots": 1, "stop": 300.0, "entry": 290.0, "target": None, "trail": 3,
+             "max_loss": 100, "capital": 2900, "mode": "position", "date": DAY, "setup": "h10", "strategy": "risky",
+             "rank": {"tier": "высокий", "direction": "short", "k": 2, "a": 0, "news": 1}}
+        o.update(k)
+        return o
+
+    def run_check(self, o, cfg, positions=None):
+        st = {"realized_today": 0, "realized_week": 0, "open_risk": 0, "trades_today": 0, "positions": positions or {}, "position_risk": {}}
+        return {r["check"]: r["ok"] for r in self.risk().check(o, cfg, C.parse_dt(DAY + " 12:00"), st, offline=True)}
+
+    def test_short_only_in_risky_and_sandbox(self):
+        self.pick("risky")
+        res = self.run_check(self.order(), C.config())
+        self.assertTrue(res["шорт"]); self.assertTrue(res["шорт и этап"]); self.assertTrue(res["реестр"])
+        real = self.run_check(self.order(), dict(C.config(), paper=False))
+        self.assertFalse(real["шорт и этап"]); self.assertFalse(real["этап"])
+        os.remove(C.tpath("strategy.json"))
+        self.assertFalse(self.run_check(self.order(strategy="moderate"), C.config())["шорт"])
+
+    def test_order_of_other_strategy_blocked(self):
+        self.assertFalse(self.run_check(self.order(), C.config())["стратегия месяца"])
+
+    def test_one_position_in_risky_even_if_correlated(self):
+        self.pick("risky")
+        res = self.run_check(self.order(), C.config(), {"VTBR": {"lots": 1, "avg": 100, "stop": 90}})
+        self.assertFalse(res["одна позиция"])
+
+    def test_drawdown_counted_per_strategy(self):
+        import riskbook
+        C.save_json(C.tpath("state", "broker.json"), {"events": [
+            {"type": "fill", "pnl": -9000, "at": "2026-10-01 10:00", "strategy": "risky"},
+            {"type": "fill", "pnl": 1000, "at": "2026-10-02 10:00"}], "approvals": {}})
+        self.assertEqual(riskbook.equity(100000)[0], 101000)
+        self.pick("risky", "2000-01")
+        self.assertEqual(riskbook.equity(100000)[0], 91000)
+
+    def test_month_choice_locked_after_first_trade(self):
+        now = self.month + "-15 12:00"
+        ok = run("moex-setup/setup.py", "strategy", "risky", "--now", now, env={"TRADER_DIR": self.tmp})
+        self.assertEqual(C.load_json(C.tpath("strategy.json"))[self.month], "risky")
+        self.assertEqual(ok.returncode, 0)
+        C.save_json(C.tpath("state", "broker.json"), {"events": [{"type": "placed", "at": self.month + "-10 10:00"}], "approvals": {}})
+        r = run("moex-setup/setup.py", "strategy", "moderate", "--now", now, env={"TRADER_DIR": self.tmp}, ok=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(C.load_json(C.tpath("strategy.json"))[self.month], "risky")
+
+
 class TestRiskRules(unittest.TestCase):
     """Правила риска портфеля: позиции прошлых дней, неделя, просадка, корреляция, усреднение, стоп только вперёд."""
 

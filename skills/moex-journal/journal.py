@@ -28,6 +28,8 @@ def key_of(t, by):
         return t.get("setup") or "—"
     if by == "symbol":
         return t["symbol"]
+    if by == "strategy":
+        return C.STRATEGY_RU.get(t.get("strategy", "moderate"), "—")
     if by == "rank":
         rk = t.get("rank")
         return "%s, за %s, против %s, новость %+d" % (rk["tier"], rk["k"], rk.get("a", 0), rk["news"]) if rk else "без рейтинга"
@@ -69,7 +71,7 @@ def cmd_stats(a):
             advice.append("«%s»: %s за сделку на %d сделках — кандидат на отключение" % (k, r(s["avg_r"]), s["trades"]))
         if s.get("trades", 0) >= 10 and s["avg_r"] > 0.2:
             advice.append("«%s»: %s за сделку — здесь ваше преимущество" % (k, r(s["avg_r"])))
-    print("\nРазрез по: %s" % {"setup": "сетапам", "symbol": "бумагам", "weekday": "дням недели", "hour": "часу входа", "side": "направлению", "rank": "рейтингу"}[a.by])
+    print("\nРазрез по: %s" % {"setup": "сетапам", "symbol": "бумагам", "weekday": "дням недели", "hour": "часу входа", "side": "направлению", "rank": "рейтингу", "strategy": "стратегиям"}[a.by])
     print(C.table(rows, [a.by, "сделок", "прибыльных", "среднее", "результат"]))
     if advice:
         print("\n" + "\n".join("• " + x for x in advice))
@@ -111,7 +113,7 @@ def cmd_note(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("stats"); p.add_argument("--by", default="setup", choices=["setup", "symbol", "weekday", "hour", "side", "rank"])
+    p = sub.add_parser("stats"); p.add_argument("--by", default="setup", choices=["setup", "symbol", "weekday", "hour", "side", "rank", "strategy"])
     p.add_argument("--since"); p.set_defaults(fn=cmd_stats)
     p = sub.add_parser("list"); p.add_argument("--last", type=int, default=20); p.set_defaults(fn=cmd_list)
     p = sub.add_parser("add")

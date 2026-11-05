@@ -101,6 +101,11 @@ DEFAULT_CONFIG = {
     "max_data_age_days": 5,          # свечи старше стольких календарных дней блокируют новую сделку
     "reconcile_ignore": [],          # тикеры брокера вне учёта набора, например фонд денежного рынка
     "tax_pct": 13,                   # НДФЛ для расчёта доходности облигаций после налога
+    # Рискованная стратегия: эти значения поверх общих, пока она выбрана на месяц (setup.py strategy).
+    # Дневной и недельный лимиты — предложение, Маргарита утверждает до реальных денег.
+    "profiles": {"risky": {"max_loss_per_trade": "2%", "max_open_risk": "2%", "daily_loss_limit": "4%", "weekly_loss_limit": "8%",
+                           "max_open_positions": 1, "max_position_pct": 200, "max_notional_mult": 2, "dd_half_pct": 20,
+                           "dd_stop_pct": 30, "allow_short": True, "allow_futures": True, "require_backtest": False}},
     "fund_spread_pct": 1.0,          # фонд денежного рынка: ключевая ставка минус столько п.п.
     "sessions": {
         # Время МСК. С 14.09.2026 основная сессия 09:00–19:00, утренняя 06:50–09:00, вечерняя 19:00–23:50.
@@ -131,9 +136,25 @@ def deep_merge(base, over):
     return out
 
 
+STRATEGIES = ("moderate", "risky")
+STRATEGY_RU = {"moderate": "умеренная", "risky": "рискованная"}
+
+
+def strategy_of(month=None):
+    """Стратегия месяца: запись этого месяца или последняя до него. Нет записей: умеренная."""
+    month = month or now_msk().strftime("%Y-%m")
+    log = load_json(tpath("strategy.json"), {}) or {}
+    past = [m for m in log if m <= month]
+    return log[max(past)] if past else "moderate"
+
+
 def config():
     user = load_json(tpath("config.json"), {}) or {}
-    return deep_merge(DEFAULT_CONFIG, user)
+    cfg = deep_merge(DEFAULT_CONFIG, user)
+    cfg["strategy"] = strategy_of()
+    if cfg["strategy"] != "moderate":
+        cfg = deep_merge(cfg, (cfg.get("profiles") or {}).get(cfg["strategy"]) or {})
+    return cfg
 
 
 def money_limit(value, account_size):

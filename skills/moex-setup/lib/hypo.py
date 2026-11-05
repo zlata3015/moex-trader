@@ -296,7 +296,7 @@ def find(reg, hid):
     return None
 
 
-STRATEGIES = {"trend-pullback": "S01", "trend-breakout": "S02", "trend-control-ema20": "S03"}
+STRATEGIES = {"trend-pullback": "S01", "trend-breakout": "S02", "trend-control-ema20": "S03", "h10": "H10"}
 
 
 def registry_path():

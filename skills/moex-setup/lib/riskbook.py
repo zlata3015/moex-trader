@@ -67,14 +67,20 @@ def pending_today(now):
             and e.get("order_id") not in filled and e.get("order_id") not in cancelled]
 
 
+def _fills():
+    """Исполнения текущей стратегии: результаты и просадки стратегий считаем отдельно."""
+    me = C.config()["strategy"]
+    return [e for e in _events() if e.get("type") == "fill" and e.get("strategy", "moderate") == me]
+
+
 def realized_between(start, end):
-    return sum(e.get("pnl") or 0 for e in _events() if e.get("type") == "fill" and start <= (e.get("at") or "")[:10] <= end)
+    return sum(e.get("pnl") or 0 for e in _fills() if start <= (e.get("at") or "")[:10] <= end)
 
 
 def equity(account_size):
     """Кривая капитала по реализованным результатам: (капитал сейчас, максимум, просадка в долях)."""
     eq = peak = float(account_size)
-    for e in sorted((e for e in _events() if e.get("type") == "fill" and e.get("pnl") is not None), key=lambda e: e["at"]):
+    for e in sorted((e for e in _fills() if e.get("pnl") is not None), key=lambda e: e["at"]):
         eq += e["pnl"]
         peak = max(peak, eq)
     return eq, peak, (eq / peak - 1) if peak else 0.0

@@ -46,7 +46,7 @@ def size(plan, spec, cfg, account, max_loss):
         "target_cost_multiple": (round(abs(target - entry) / cost_pts, 1) if cost_pts and target is not None else None),
         "cost_share_of_risk": round(cost_pts / risk_pts, 3) if risk_pts else None, "trail": plan.get("trail"),
         "mode": plan["mode"], "flat_by": plan.get("flat_by"), "max_hold_days": plan.get("max_hold_days"),
-        "setup": plan.get("setup"), "rank": plan.get("rank"), "date": plan["date"], "limiter": limiter,
+        "setup": plan.get("setup"), "strategy": cfg["strategy"], "rank": plan.get("rank"), "date": plan["date"], "limiter": limiter,
         "spec": {k: spec.get(k) for k in ("minstep", "stepprice", "initial_margin", "high_limit", "low_limit",
                                            "last_trade_date", "turnover", "facevalue", "lot", "last", "issuer", "issuer_name")},
     }

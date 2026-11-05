@@ -166,7 +166,7 @@ def cmd_place(a):
     log_event(s, {"type": "placed", "fingerprint": o["fingerprint"], "symbol": o["symbol"], "kind": o["kind"], "side": o["side"],
                   "lots": o["lots"], "price": price, "order_id": r.get("orderId", oid), "sandbox": sandbox,
                   "max_loss": o.get("max_loss", 0), "risk_rub": o.get("max_loss_at_stop"), "stop": o.get("stop"),
-                  "target": o.get("target"), "setup": o.get("setup"), "closing": o.get("closing", False),
+                  "target": o.get("target"), "setup": o.get("setup"), "strategy": o.get("strategy", cfg["strategy"]), "closing": o.get("closing", False),
                   "status": r.get("executionReportStatus"), "account": acc}, now)
     if o.get("closing"):
         # Стопы снимаем только после принятой заявки: при отказе брокера позиция остаётся под защитой.
@@ -378,12 +378,13 @@ def record_fill(s, symbol, kind, side, lots, price, now, order=None, order_id=No
     signed = lots if side == "buy" else -lots
     cur = pos["lots"] if pos.get("side", "long") == "long" else -pos["lots"]
     pnl = None
+    strategy = pos.get("strategy") or (order or {}).get("strategy") or cfg["strategy"]
     if cur == 0 or (cur > 0) == (signed > 0):   # открытие / доливка
         new = cur + signed
         pos["avg"] = (abs(cur) * pos["avg"] + lots * price) / abs(new)
         if cur == 0:
             sp = (order or {}).get("spec") or {}
-            pos.update(opened=C.fmt_dt(now), setup=(order or {}).get("setup"), rank=(order or {}).get("rank"), risk_rub=(order or {}).get("max_loss_at_stop"),
+            pos.update(opened=C.fmt_dt(now), setup=(order or {}).get("setup"), strategy=(order or {}).get("strategy", cfg["strategy"]), rank=(order or {}).get("rank"), risk_rub=(order or {}).get("max_loss_at_stop"),
                        fees=0.0, stop=(order or {}).get("stop"), target=(order or {}).get("target"),
                        stepprice=sp.get("stepprice"), minstep=sp.get("minstep"), facevalue=sp.get("facevalue"),
                        issuer=sp.get("issuer"), mode=(order or {}).get("mode"))
@@ -398,7 +399,7 @@ def record_fill(s, symbol, kind, side, lots, price, now, order=None, order_id=No
             total = pos["realized"] - pos.get("fees", 0)
             j = C.load_json(C.tpath("journal.json"), []) or []
             risk = pos.get("risk_rub")
-            j.append({"symbol": symbol, "kind": kind, "side": "long" if direction > 0 else "short", "setup": pos.get("setup"),
+            j.append({"symbol": symbol, "kind": kind, "side": "long" if direction > 0 else "short", "setup": pos.get("setup"), "strategy": strategy,
                       "rank": pos.get("rank"), "opened": pos.get("opened"), "closed": C.fmt_dt(now), "entry": pos["avg"], "exit": price,
                       "lots": q, "pnl": round(total, 2), "risk_rub": risk,
                       "r": round(total / risk, 3) if risk else None})
@@ -412,7 +413,7 @@ def record_fill(s, symbol, kind, side, lots, price, now, order=None, order_id=No
         pf["cash"] += (-notional if side == "buy" else notional) - fee if kind != "futures" else (pnl or 0) - (fee if pnl is None else 0)
     C.save_json(C.tpath("portfolio.json"), pf)
     log_event(s, {"type": "fill", "symbol": symbol, "side": side, "lots": lots, "price": price, "pnl": round(pnl, 2) if pnl is not None else None, "fee": round(fee, 2),
-                  "order_id": order_id}, now)
+                  "order_id": order_id, "strategy": strategy}, now)
     print("Исполнение записано: %s %s %d по %s%s" % (side, symbol, lots, C.px(price),
                                                     (", результат %s" % C.rub(pnl)) if pnl is not None else ""))
 

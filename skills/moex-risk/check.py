@@ -29,6 +29,8 @@ def check(o, cfg, now, st, offline=False):
     if o.get("closing"):
         add(True, "закрытие", "заявка закрывает позицию — снижает риск, лимиты не применяются")
         return res
+    add(o.get("strategy", "moderate") == cfg.get("strategy", "moderate"), "стратегия месяца", "заявка: %s, месяц: %s" % (
+        C.STRATEGY_RU.get(o.get("strategy", "moderate")), C.STRATEGY_RU.get(cfg.get("strategy", "moderate"))))
     why = C.halted()
     add(why is None, "аварийная остановка", "новые заявки запрещены: %s" % why if why else "не включена")
     if not cfg["paper"]:
@@ -101,6 +103,9 @@ def check(o, cfg, now, st, offline=False):
     n_groups = len({riskbook.sector(s) or s for s in pos if s not in linked and s != o["symbol"]})
     add(n_groups < cfg["max_open_positions"] or o["symbol"] in pos or bool(group), "открытых позиций",
         "%d независимых из %d (связанные бумаги считаются одной)" % (n_groups, cfg["max_open_positions"]))
+    if cfg.get("strategy", "moderate") == "risky":
+        others = [s for s in pos if s != o["symbol"]]
+        add(len(others) < cfg["max_open_positions"], "одна позиция", "открыты: %s" % (", ".join(others) or "нет"))
     # лимит на корпоративного эмитента (облигации)
     if k in ("bonds", "corp") and not str(o["symbol"]).startswith("SU"):
         issuer = (o.get("spec") or {}).get("issuer")
@@ -136,6 +141,11 @@ def check(o, cfg, now, st, offline=False):
     turn = (o.get("spec") or {}).get("turnover")
     if turn is not None and k in ("shares", "etf"):
         add(turn >= cfg["min_turnover_rub"], "ликвидность", "оборот %s, минимум %s" % (C.rub(turn, 0), C.rub(cfg["min_turnover_rub"], 0)))
+    if cfg.get("max_notional_mult") and k == "futures":
+        import costs
+        full = o["entry"] * costs.rub_per_point(dict(o.get("spec") or {}, kind=k)) * o["lots"]
+        add(full <= account * cfg["max_notional_mult"] * 1.001, "полная стоимость", "%s из %s" % (
+            C.rub(full, 0), C.rub(account * cfg["max_notional_mult"], 0)))
     # время и сессия
     if o["mode"] in ("intraday", "position"):
         sess = C.session_of(k if k in cfg["sessions"] else "shares", now, cfg)
@@ -237,15 +247,17 @@ def check(o, cfg, now, st, offline=False):
     elif cfg["require_backtest"]:
         add(False, "бэктест", "нет бэктеста этого сетапа по %s (require_backtest включён)" % o["symbol"])
     # режим рынка
-    if cfg["regime_filter"] and long_ and k in ("shares", "etf") and not offline:
+    risky = cfg.get("strategy", "moderate") == "risky"   # рынок растёт: только покупка, падает: только продажа
+    if cfg["regime_filter"] and not offline and (risky or (long_ and k in ("shares", "etf"))):
         try:
             import ta
             idx = moex.candles("IMOEX", "1d", days=150, end=now, kind="index", source="iss")
             c = [b["c"] for b in idx if b["t"][:10] < now.strftime("%Y-%m-%d")]
             e50 = ta.ema(c, 50)[-1]
             up = c[-1] > e50
-            add(up or o["mode"] == "intraday", "режим рынка", "IMOEX %s EMA50 дневной (%s vs %s)" % (
-                "выше" if up else "ниже", C.px(c[-1]), C.px(e50)), warn=not up)
+            fits = up == long_
+            add(fits or o["mode"] == "intraday", "режим рынка", "IMOEX %s EMA50 дневной (%s vs %s)" % (
+                "выше" if up else "ниже", C.px(c[-1]), C.px(e50)), warn=not fits)
         except (C.NetError, IndexError, TypeError) as e:
             add(False, "режим рынка", "проверка не выполнена: %s" % str(e)[:80])
     # статус стратегии в реестре и этап проекта

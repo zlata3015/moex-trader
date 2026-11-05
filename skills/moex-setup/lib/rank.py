@@ -109,6 +109,6 @@ def log_signal(r, setup, price, atr, day, allowed):
     key = (day, r["symbol"], r["direction"])
     if any((x["date"], x["symbol"], x["direction"]) == key for x in log):
         return
-    log.append({"date": day, "symbol": r["symbol"], "direction": r["direction"], "setup": setup, "tier": r["tier"], "k": r["k"],
+    log.append({"date": day, "strategy": C.config()["strategy"], "symbol": r["symbol"], "direction": r["direction"], "setup": setup, "tier": r["tier"], "k": r["k"],
                 "a": r["a"], "news": r["news"], "price": price, "atr": atr, "allowed": allowed})
     C.save_json(C.tpath("signals.json"), log)
