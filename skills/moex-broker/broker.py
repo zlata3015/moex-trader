@@ -56,9 +56,10 @@ def readiness(o, now, s):
     risk = (C.load_json(C.tpath("state", "risk.json"), {}) or {}).get("verdicts", {})
     v = risk.get(o["fingerprint"])
     d = now.strftime("%Y-%m-%d")
-    risk_ok = o.get("closing") or (v and v["verdict"] == "PASS" and v["date"] == d)
+    paper = bool(C.config()["paper"])   # PASS и «да» из песочницы не действуют на реальном счёте
+    risk_ok = o.get("closing") or (v and v["verdict"] == "PASS" and v["date"] == d and v.get("paper", True) == paper)
     ap = s["approvals"].get(o["fingerprint"])
-    yes_ok = ap and ap["at"].startswith(d)
+    yes_ok = ap and ap["at"].startswith(d) and ap.get("paper", True) == paper
     return risk_ok, yes_ok, v
 
 
@@ -100,7 +101,7 @@ def cmd_approve(a):
         log_event(s, {"type": "rejected", "fingerprint": o["fingerprint"], "symbol": o["symbol"], "reply": a.reply}, now)
         print("Ответ «%s» не является подтверждением. Заявка не одобрена." % a.reply)
         return
-    s["approvals"][o["fingerprint"]] = {"reply": a.reply, "at": C.fmt_dt(now), "symbol": o["symbol"]}
+    s["approvals"][o["fingerprint"]] = {"reply": a.reply, "at": C.fmt_dt(now), "symbol": o["symbol"], "paper": bool(C.config()["paper"])}
     log_event(s, {"type": "approved", "fingerprint": o["fingerprint"], "symbol": o["symbol"], "reply": a.reply}, now)
     print("Подтверждение записано дословно: «%s» для заявки %d (%s %s %d)." % (a.reply, a.index, o["side"], o["symbol"], o["lots"]))
 
@@ -119,8 +120,10 @@ def account_id(a, sandbox):
 
 def cmd_place(a):
     import tinvest
-    now = C.now_msk(a.now)
     cfg = C.config()
+    if a.now and not cfg["paper"]:
+        C.die("--now запрещён при paper false: реальная заявка отправляется только на текущее время.")
+    now = C.now_msk(a.now)
     o = pick(a)
     s = state()
     risk_ok, yes_ok, _ = readiness(o, now, s)
@@ -138,7 +141,12 @@ def cmd_place(a):
               "broker.py reconcile. Повторно не отправляю.")
     sandbox = bool(cfg["paper"])
     acc = account_id(a, sandbox)
-    if not o.get("closing"):
+    if o.get("closing"):
+        import riskbook
+        why = riskbook.closing_problem(o, broker_positions(acc, sandbox))
+        if why:
+            C.die("Заявка помечена как закрытие, но %s. Отправка запрещена." % why)
+    else:
         d = reconcile_diff(acc, sandbox, cfg)
         if d:
             C.die("Учёт расходится со счётом: %s. Новые заявки запрещены, пока не сойдётся: broker.py reconcile." % "; ".join(d))
@@ -375,7 +383,7 @@ def record_fill(s, symbol, kind, side, lots, price, now, order=None, order_id=No
         pos["avg"] = (abs(cur) * pos["avg"] + lots * price) / abs(new)
         if cur == 0:
             sp = (order or {}).get("spec") or {}
-            pos.update(opened=C.fmt_dt(now), setup=(order or {}).get("setup"), risk_rub=(order or {}).get("max_loss_at_stop"),
+            pos.update(opened=C.fmt_dt(now), setup=(order or {}).get("setup"), rank=(order or {}).get("rank"), risk_rub=(order or {}).get("max_loss_at_stop"),
                        fees=0.0, stop=(order or {}).get("stop"), target=(order or {}).get("target"),
                        stepprice=sp.get("stepprice"), minstep=sp.get("minstep"), facevalue=sp.get("facevalue"),
                        issuer=sp.get("issuer"), mode=(order or {}).get("mode"))
@@ -391,7 +399,7 @@ def record_fill(s, symbol, kind, side, lots, price, now, order=None, order_id=No
             j = C.load_json(C.tpath("journal.json"), []) or []
             risk = pos.get("risk_rub")
             j.append({"symbol": symbol, "kind": kind, "side": "long" if direction > 0 else "short", "setup": pos.get("setup"),
-                      "opened": pos.get("opened"), "closed": C.fmt_dt(now), "entry": pos["avg"], "exit": price,
+                      "rank": pos.get("rank"), "opened": pos.get("opened"), "closed": C.fmt_dt(now), "entry": pos["avg"], "exit": price,
                       "lots": q, "pnl": round(total, 2), "risk_rub": risk,
                       "r": round(total / risk, 3) if risk else None})
             C.save_json(C.tpath("journal.json"), j)

@@ -83,6 +83,7 @@ DEFAULT_CONFIG = {
     "regime_filter": True,           # лонг только если IMOEX выше EMA50 дневной (свинг) / не в сильном падении
     "require_backtest": True,        # блокировать сетапы без бэктеста или с отрицательным мат. ожиданием
     "require_trend_alignment": True, # сделка только по тренду недели и дня (месяц не против)
+    "require_high_rank": True,       # новая сделка только с высоким рейтингом (lib/rank.py)
     "trail_atr": 3.0,                # подтягиваемый стоп: экстремум с входа минус K ATR
     "max_hold_days_position": 60,    # максимум дней в позиции для торговли по тренду
     "allow_short": False,

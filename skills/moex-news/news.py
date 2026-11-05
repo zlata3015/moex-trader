@@ -23,6 +23,10 @@ FEEDS = [
     ("Коммерсантъ", "https://www.kommersant.ru/RSS/news.xml"),
     ("Smart-Lab", "https://smart-lab.ru/news/rss/"),
     ("ТАСС Экономика", "https://tass.ru/rss/v2.xml"),
+    ("Финам", "https://www.finam.ru/analysis/conews/rsspoint/"),
+    ("Ведомости Финансы", "https://www.vedomosti.ru/rss/rubric/finance"),
+    ("Прайм", "https://1prime.ru/export/rss2/index.xml"),
+    ("Банк России", "https://www.cbr.ru/rss/eventrss"),
 ]
 
 ALIASES = {
@@ -87,7 +91,7 @@ def fetch_all(extra):
                 p = os.path.join(os.environ["MOEX_TRADER_FIXTURES"], C.fixture_key(url, {}) + ".xml")
                 raw = open(p, "rb").read() if os.path.exists(p) else b"<rss/>"
             else:
-                raw = C.http(url, headers={"Accept": "application/rss+xml, application/xml, text/xml"}, retries=1, timeout=15)
+                raw = C.http(url, headers={"Accept": "application/rss+xml, application/xml, text/xml, */*"}, retries=1, timeout=15)
             items += parse_feed(raw, name)
         except C.NetError as e:
             errors.append("%s: %s" % (name, str(e)[:120]))

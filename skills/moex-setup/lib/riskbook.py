@@ -90,13 +90,11 @@ def drawdown_multiplier(cfg, dd):
 
 
 def correlation(sym_a, sym_b, days=90, end=None):
-    """Корреляция дневных доходностей за ~90 дней (по данным ISS). None, если данных нет."""
+    """Корреляция дневных доходностей за ~90 дней (по данным ISS). None, если истории мало.
+    Сбой сети не глотается: иначе связанная позиция прошла бы проверку как независимая."""
     import moex
-    try:
-        a = moex.candles(sym_a, "1d", days=days + 30, end=end, source="iss")
-        b = moex.candles(sym_b, "1d", days=days + 30, end=end, source="iss")
-    except C.NetError:
-        return None
+    a = moex.candles(sym_a, "1d", days=days + 30, end=end, source="iss")
+    b = moex.candles(sym_b, "1d", days=days + 30, end=end, source="iss")
     ca = {x["t"][:10]: x["c"] for x in a}
     cb = {x["t"][:10]: x["c"] for x in b}
     dates = sorted(set(ca) & set(cb))[-days:]
@@ -128,6 +126,20 @@ def correlated_group(symbol, open_pos, cfg, offline=False, now=None):
             if r is not None and r >= thr:
                 out.append((s, "корреляция %s" % C.num(r, 2)))
     return out
+
+
+def closing_problem(o, fact):
+    """Заявка с пометкой «закрытие» обходит лимиты, поэтому она обязана только уменьшать позицию на счёте.
+    fact: {тикер: (штук со знаком, тип)}. -> текст причины или None."""
+    qty = (fact.get(o["symbol"]) or (0, None))[0]
+    if not qty:
+        return "на счёте нет позиции %s" % o["symbol"]
+    if (qty > 0) != (o["side"] == "sell"):
+        return "заявка увеличила бы позицию %s, а не закрыла" % o["symbol"]
+    per_lot = 1 if o.get("kind") in ("futures", "bonds", "corp") else (o.get("lot_size") or 1)
+    if o["lots"] * per_lot > abs(qty) + 1e-6:
+        return "закрытие %s больше позиции: %s против %s" % (o["symbol"], C.num(o["lots"] * per_lot, 0), C.num(abs(qty), 0))
+    return None
 
 
 def snapshot(cfg, now, offline=False):

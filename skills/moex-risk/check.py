@@ -31,8 +31,13 @@ def check(o, cfg, now, st, offline=False):
         return res
     why = C.halted()
     add(why is None, "аварийная остановка", "новые заявки запрещены: %s" % why if why else "не включена")
-    if offline and not cfg["paper"]:
-        add(False, "офлайн", "реальная заявка без проверки данных запрещена")
+    if not cfg["paper"]:
+        if offline:
+            add(False, "офлайн", "реальная заявка без проверки данных запрещена")
+        for key, name in (("regime_filter", "режим рынка"), ("require_trend_alignment", "тренд"), ("require_backtest", "бэктест"),
+                          ("require_high_rank", "рейтинг")):
+            if not cfg.get(key):
+                add(False, "настройки", "для реальной заявки нельзя выключать проверку: %s (%s)" % (name, key))
     long_ = o["direction"] == "long"
     account = cfg["account_size"]
     max_loss = C.money_limit(cfg["max_loss_per_trade"], account)
@@ -82,7 +87,11 @@ def check(o, cfg, now, st, offline=False):
             add(not losing, "усреднение", "уже есть позиция по %s, средняя %s — %s" % (
                 o["symbol"], C.px(p["avg"]), "докупка в убытке ЗАПРЕЩЕНА" if losing else "добавление в прибыли"))
     # коррелирующие позиции считаем как одну
-    group = riskbook.correlated_group(o["symbol"], [s for s in pos if s != o["symbol"]], cfg, offline, now)
+    try:
+        group = riskbook.correlated_group(o["symbol"], [s for s in pos if s != o["symbol"]], cfg, offline, now)
+    except C.NetError as e:
+        group = []
+        add(False, "корреляция", "проверка не выполнена: %s" % str(e)[:80])
     if group:
         g_risk = sum(st["position_risk"].get(s) or 0 for s, _ in group)
         g_lim = limit * float(cfg.get("corr_group_risk_mult", 1.0))
@@ -120,6 +129,7 @@ def check(o, cfg, now, st, offline=False):
         add(o["capital"] <= st["cash"], "деньги на счёте", "нужно %s, свободно %s" % (C.rub(o["capital"], 0), C.rub(st["cash"], 0)))
     if not long_:
         add(cfg["allow_short"], "шорт", "короткие продажи %s в конфиге" % ("разрешены" if cfg["allow_short"] else "выключены"))
+        add(cfg["paper"], "шорт и этап", "шорт только в песочнице до этапа 5" if not cfg["paper"] else "песочница")
     allow = {"futures": cfg["allow_futures"], "bonds": cfg["allow_bonds"], "corp": cfg["allow_bonds"], "currency": cfg["allow_currency"]}
     if k in allow:
         add(allow[k], "рынок", "%s %s" % (k, "разрешён" if allow[k] else "выключен в конфиге"))
@@ -187,6 +197,7 @@ def check(o, cfg, now, st, offline=False):
                 monthly = moex.candles(o["symbol"], "1M", days=3650, end=now, kind=k, source="iss")
             except C.NetError:
                 monthly = None
+                add(bool(cfg["paper"]), "месячные свечи", "не получены, месяц посчитан по дневным свечам", warn=bool(cfg["paper"]))
             td = trend.top_down(daily, monthly, require=trend.STOCK_REQUIRE if k == "shares" else ("1w", "1d"))
             want = o["direction"]
             got = td["verdict"]["direction"]
@@ -195,6 +206,22 @@ def check(o, cfg, now, st, offline=False):
                 "сделка по тренду" if got == want else ("сделка ПРОТИВ тренда" if got else td["verdict"]["why"])))
         except (C.NetError, KeyError, IndexError) as e:
             add(False, "тренд", "проверка не выполнена: %s" % str(e)[:80])
+    # рейтинг: новая сделка только с высоким рейтингом в её направлении
+    if cfg.get("require_high_rank") and k in ("shares", "etf", "futures", "currency"):
+        import rank
+        rk = o.get("rank")
+        if not offline:
+            try:
+                bars_r = moex.candles(o["symbol"], "1d", days=200, end=now, kind=k, source="iss")
+                rk = rank.assess(bars_r, o["direction"], o["symbol"], now)
+            except (C.NetError, IndexError, TypeError) as e:
+                rk = None
+                add(False, "рейтинг", "проверка не выполнена: %s" % str(e)[:80])
+        if rk and rk.get("direction", o["direction"]) == o["direction"]:
+            add(rk["tier"] == "высокий", "рейтинг", "%s: подтверждений %d, против %d, новость %+d" % (
+                rk["tier"], rk["k"], rk.get("a", 0), rk["news"]))
+        elif offline:
+            add(False, "рейтинг", "у заявки нет рейтинга в её направлении")
     # бэктест
     bt = C.load_json(C.tpath("backtest", "summary.json"), {}) or {}
     key = "%s|%s" % (o["symbol"], "orb" if o.get("setup") == "orb" else
@@ -274,6 +301,8 @@ def main():
     ap.add_argument("--status", action="store_true")
     a = ap.parse_args()
     cfg = C.config()
+    if a.now and not cfg["paper"] and not a.status:
+        C.die("--now запрещён при paper false: реальную заявку проверяем только на текущее время.")
     now = C.now_msk(a.now)
     if a.status:
         return status(cfg, now, a.offline)
@@ -296,7 +325,7 @@ def main():
         if fails:
             print("  Причина: " + "; ".join(r["check"] for r in fails))
         verdicts[o["fingerprint"]] = {"verdict": verdict, "at": C.fmt_dt(now), "date": now.strftime("%Y-%m-%d"),
-                                      "symbol": o["symbol"], "fails": [r["check"] for r in fails]}
+                                      "paper": bool(cfg["paper"]), "symbol": o["symbol"], "fails": [r["check"] for r in fails]}
     C.save_json(C.tpath("orders.json"), orders)
     C.save_json(C.tpath("state", "risk.json"), {"verdicts": verdicts})
 

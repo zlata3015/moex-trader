@@ -4,7 +4,8 @@
 
   topdown.py analyze SBER                    тренды М/Н/Д, сигнал, предложение сделки
   topdown.py analyze SBER --plan             + записать план (trader/plan.json) для moex-budget → moex-risk → moex-broker
-  topdown.py scan                            все ликвидные акции: где тренды согласны и есть сигнал
+  topdown.py scan                            все ликвидные акции: где тренды согласны и есть сигнал, с рейтингом
+  topdown.py news-mark SBER -1 --title "..." --url URL --published 2026-11-05   новость о компании: 1 хорошая, 0, -1 плохая
   topdown.py analyze SBER --files-dir DIR    по файлам SBER_D.csv / SBER_M.csv (выгрузки ISS)
 """
 import argparse
@@ -15,6 +16,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "moex-setup", "lib"))
 import common as C  # noqa: E402
 import moex  # noqa: E402
+import rank  # noqa: E402
 import ta  # noqa: E402
 import trend  # noqa: E402
 
@@ -59,6 +61,8 @@ def analyze(sym, a):
         stop = last["c"] - a.stop_atr * atr_d if long_ else last["c"] + a.stop_atr * atr_d
         res["proposal"] = {"entry": last["c"], "stop": C.round_step(stop, spec.get("minstep") or 0.01, "down" if long_ else "up"),
                            "trail": a.trail_atr, "risk_pct": a.stop_atr * atr_d / last["c"] * 100}
+    if sig:
+        res["rank"] = rank.assess(daily, d, sym, C.now_msk(a.now))
     bt = (C.load_json(C.tpath("backtest", "summary.json"), {}) or {}).get("%s|trend" % sym)
     if bt:
         res["backtest"] = bt
@@ -99,6 +103,14 @@ def show(r):
             print("Сигнал сегодня: %s — %s %s" % ({"trend-pullback": "откат к EMA10 и разворот", "trend-breakout": "пробой 20-дневного экстремума"}[s["setup"]],
                                                "уровень", C.px(s["level"])))
             print("Подтверждение EMA20: %s (сигнал этим не отменяется)" % ("да, цена за EMA20" if s["confirm"] else "нет, цена по другую сторону EMA20"))
+            rk = r.get("rank")
+            if rk:
+                print("Рейтинг на %s: %s · за %d из 3 (%s) · против %d · новость в сторону сделки %+d%s" % (
+                    "покупку" if d == "long" else "продажу", rk["tier"], rk["k"],
+                    ", ".join(k for k, v in rk["confirm"].items() if v) or "нет", rk["a"], rk["news"],
+                    " — %s" % rk["news_title"] if rk["news_title"] else ""))
+                if rk["tier"] != "высокий":
+                    print("Сделку не открываем: нужен высокий рейтинг.")
             print("Предложение: вход около %s (завтра на открытии или сейчас), стоп %s (%s ATR, −%s), без цели — "
                   "подтягиваемый стоп %s ATR, держим, пока тренд жив" % (C.px(p["entry"]), C.px(p["stop"]), C.num(2, 0),
                                                                         C.pct(p["risk_pct"]), C.num(p["trail"], 1)))
@@ -129,7 +141,7 @@ def write_plan(r, a):
             "tf": "1d", "setup": (r["signal"] or {}).get("setup", "trend-manual"), "entry": p["entry"], "stop": p["stop"],
             "target": None, "risk_per_unit": abs(p["entry"] - p["stop"]), "reward_per_unit": None, "rr": None,
             "stop_rule": "atr:%s" % a.stop_atr, "target_rule": "none", "trail": p["trail"], "initial_stop": p["stop"],
-            "minstep": r["spec"].get("minstep"), "atr": r["atr"], "confirm_ema20": (r["signal"] or {}).get("confirm"), "date": now.strftime("%Y-%m-%d"), "created": C.fmt_dt(now),
+            "minstep": r["spec"].get("minstep"), "atr": r["atr"], "confirm_ema20": (r["signal"] or {}).get("confirm"), "rank": r.get("rank"), "date": now.strftime("%Y-%m-%d"), "created": C.fmt_dt(now),
             "entry_time": C.fmt_dt(now), "flat_by": None, "max_hold_days": C.config().get("max_hold_days_position", 60),
             "nearest_resistance": None, "nearest_support": None,
             "trend": {k: r["states"][k]["dir"] for k in r["states"]}}
@@ -157,7 +169,7 @@ def cmd_scan(a):
         scan = importlib.util.module_from_spec(sp)
         sp.loader.exec_module(scan)
         syms = [u["symbol"] for u in scan.universe("shares", C.config()["min_turnover_rub"], a.limit)]
-    rows, ready = [], []
+    rows, ready, ranked = [], [], []
     for s in syms:
         try:
             r = analyze(s, a)
@@ -176,8 +188,25 @@ def cmd_scan(a):
         rows.append([s, ARROW[st["1M"]["dir"]], ARROW[st["1w"]["dir"]], ARROW[st["1d"]["dir"]], verdict, sig or "нет", conf, C.px(r["price"])])
         if sig and r["allowed"]:
             ready.append(s)
+        if sig:
+            ranked.append(dict(r["rank"], symbol=s, setup=sig, price=r["price"], allowed=r["allowed"]))
+            rank.log_signal(ranked[-1], sig, r["price"], r["atr"], r["date"], r["allowed"])
     print(C.table(rows, ["тикер", "месяц", "неделя", "день", "направление", "сигнал", "EMA20", "цена"]))
     print("\nГотовы к входу по тренду: %s" % (", ".join(ready) if ready else "нет — это нормально, ждём сигналов"))
+    held = (C.load_json(C.tpath("portfolio.json"), {}) or {}).get("positions") or {}
+    for side, title in (("long", "Рейтинг на покупку"), ("short", "Рейтинг на продажу")):
+        lst = sorted((x for x in ranked if x["direction"] == side), key=rank.sort_key)
+        print("\n%s (сделка только с высоким, лимиты проверяет moex-risk):" % title)
+        if side == "short" and not C.config()["allow_short"]:
+            print("Шорт выключен: это учёт для рискованной стратегии, заявки не будет.")
+        if lst:
+            print(C.table([[i, x["symbol"], x["tier"], "%d из 3" % x["k"], x["a"], "%+d" % x["news"], x["setup"], C.px(x["price"])]
+                           for i, x in enumerate(lst, 1)], ["№", "тикер", "рейтинг", "за", "против", "новость", "сигнал", "цена"]))
+        else:
+            print("сигналов нет")
+    for x in ranked:
+        if x["direction"] == "short" and x["tier"] == "высокий" and (held.get(x["symbol"]) or {}).get("lots"):
+            print("⚠ %s в портфеле, а рейтинг на продажу высокий: разберите позицию. Стоп и правила выхода это не меняет." % x["symbol"])
     try:
         idx = moex.candles("IMOEX", "1d", days=150, kind="index", source="iss") if not a.files_dir else \
             moex.load_file(os.path.join(a.files_dir, "IMOEX_D.csv"))
@@ -187,6 +216,14 @@ def cmd_scan(a):
               "покупки разрешены" if up else "фильтр рынка: новые покупки по умолчанию блокируются (regime_filter)"))
     except (C.NetError, FileNotFoundError, IndexError):
         pass
+
+
+def cmd_news_mark(a):
+    try:
+        e = rank.add_mark(a.symbol, a.mark, a.title, a.url, a.published, C.now_msk(a.now), a.url2)
+    except ValueError as err:
+        C.die(str(err))
+    print("Отметка записана: %s %+d, %s (%s). Действует 3 торговых дня." % (a.symbol, e["mark"], e["title"], e["published"]))
 
 
 def main():
@@ -202,6 +239,11 @@ def main():
     p.add_argument("--plan", action="store_true"); p.add_argument("--force", action="store_true")
     p.set_defaults(fn=cmd_analyze)
     p = sub.add_parser("scan"); common(p); p.add_argument("--limit", type=int, default=40); p.set_defaults(fn=cmd_scan)
+    p = sub.add_parser("news-mark", help="отметка новости: 1 в сторону сделки, 0 нейтрально, -1 против")
+    p.add_argument("symbol"); p.add_argument("mark", type=int); p.add_argument("--title", required=True)
+    p.add_argument("--url", required=True); p.add_argument("--url2", help="второе издание, если первичного источника нет")
+    p.add_argument("--published", required=True); p.add_argument("--now")
+    p.set_defaults(fn=cmd_news_mark)
     a = ap.parse_args()
     try:
         a.fn(a)

@@ -2,6 +2,7 @@
 
 Используют фикстуры в формате ответов ISS (tests/make_fixtures.py) и имитацию ответов T-Invest API.
 """
+import importlib.util
 import json
 import os
 import subprocess
@@ -168,7 +169,7 @@ class TestPipeline(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp()
         cls.env = {"TRADER_DIR": cls.tmp, "TINVEST_TOKEN": "dummy-token-never-printed"}
         with open(os.path.join(cls.tmp, "config.json"), "w") as f:
-            json.dump({"require_trend_alignment": False, "require_backtest": False, "min_reward_risk": 1.5,
+            json.dump({"require_trend_alignment": False, "require_backtest": False, "require_high_rank": False, "min_reward_risk": 1.5,
                        "max_loss_per_trade": 1000}, f)   # здесь проверяем механику; правила риска — в TestRiskRules
         _write_tinvest_fixtures()
 
@@ -362,10 +363,122 @@ class TestTrend(unittest.TestCase):
         self.assertIn("трейлинг", u)
 
 
+class TestRank(unittest.TestCase):
+    """Рейтинг только упорядочивает сигналы; отметка новости не меняется задним числом."""
+
+    def setUp(self):
+        import rank
+        self.rank = rank
+        self.tmp = tempfile.mkdtemp()
+        self.old = os.environ.get("TRADER_DIR")
+        os.environ["TRADER_DIR"] = self.tmp
+        self.now = C.parse_dt("2026-11-05 12:00")
+        self.bars = [{"c": 100 + i * 0.5 + (3 if i % 3 == 0 else -3)} for i in range(120)]
+
+    def tearDown(self):
+        os.environ.pop("TRADER_DIR") if self.old is None else os.environ.__setitem__("TRADER_DIR", self.old)
+
+    def _conf(self, side_ok):
+        return lambda b, d: {"EMA20": d == side_ok, "MACD": d == side_ok, "RSI": False}
+
+    def test_tiers(self):
+        old = self.rank.confirmations
+        try:
+            self.rank.confirmations = self._conf("long")
+            self.assertEqual(self.rank.assess(self.bars, "long", "SBER", self.now)["tier"], "обычный")
+            self.rank.add_mark("SBER", 1, "рост прибыли", "https://www.moex.com/n1", "2026-11-05", self.now)
+            r = self.rank.assess(self.bars, "long", "SBER", self.now)
+            self.assertEqual((r["tier"], r["k"], r["a"], r["news"]), ("высокий", 2, 0, 1))
+            self.rank.add_mark("GAZP", -1, "плохо", "https://www.moex.com/n1", "2026-11-05", self.now)
+            bad = self.rank.assess(self.bars, "long", "GAZP", self.now)
+            self.assertEqual(bad["tier"], "низкий")
+            self.assertLess(self.rank.sort_key(r), self.rank.sort_key(bad))
+        finally:
+            self.rank.confirmations = old
+
+    def test_against_signal_is_low_even_with_good_news(self):
+        old = self.rank.confirmations
+        self.rank.confirmations = lambda b, d: {"EMA20": True, "MACD": d == "short", "RSI": False}
+        try:
+            self.rank.add_mark("SBER", 1, "t", "https://www.moex.com/n1", "2026-11-05", self.now)
+            self.assertEqual(self.rank.assess(self.bars, "long", "SBER", self.now)["tier"], "низкий")
+        finally:
+            self.rank.confirmations = old
+
+    def test_bad_news_is_high_for_sale(self):
+        old = self.rank.confirmations
+        self.rank.confirmations = self._conf("short")
+        try:
+            self.rank.add_mark("GAZP", -1, "убыток", "https://www.moex.com/n1", "2026-11-05", self.now)
+            r = self.rank.assess(self.bars, "short", "GAZP", self.now)
+            self.assertEqual((r["tier"], r["news"]), ("высокий", 1))
+            self.assertEqual(self.rank.assess(self.bars, "long", "GAZP", self.now)["tier"], "низкий")
+        finally:
+            self.rank.confirmations = old
+
+    def test_signal_log_keeps_untaken_once(self):
+        r = {"symbol": "SBER", "direction": "long", "tier": "обычный", "k": 1, "a": 0, "news": 0}
+        self.rank.log_signal(r, "откат", 300, 5, "2026-11-05", True)
+        self.rank.log_signal(r, "откат", 300, 5, "2026-11-05", True)
+        self.assertEqual(len(C.load_json(C.tpath("signals.json"), [])), 1)
+
+    def test_risk_blocks_without_high_rank(self):
+        spec = importlib.util.spec_from_file_location("risk_rank", os.path.join(SK, "moex-risk", "check.py"))
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        o = {"direction": "long", "kind": "shares", "symbol": "SBER", "lots": 1, "stop": 280.0, "entry": 290.0, "target": None, "trail": 3,
+             "max_loss": 100, "capital": 2900, "mode": "position", "date": DAY, "setup": "trend-pullback"}
+        st = {"realized_today": 0, "realized_week": 0, "open_risk": 0, "trades_today": 0, "positions": {}, "position_risk": {}}
+        now = C.parse_dt(DAY + " 12:00")
+        def verdict(rk, closing=False):
+            res = m.check(dict(o, rank=rk, closing=closing), dict(C.DEFAULT_CONFIG, require_backtest=False), now, st, offline=True)
+            return {r["check"]: r["ok"] for r in res}
+        high = {"tier": "высокий", "direction": "long", "k": 2, "a": 0, "news": 1}
+        self.assertTrue(verdict(high)["рейтинг"])
+        self.assertFalse(verdict(dict(high, tier="обычный"))["рейтинг"])
+        self.assertFalse(verdict(dict(high, tier="низкий"))["рейтинг"])
+        self.assertFalse(verdict(dict(high, direction="short"))["рейтинг"])
+        self.assertFalse(verdict(None)["рейтинг"])
+        self.assertNotIn("рейтинг", verdict(None, closing=True))
+        # рискованная стратегия: тот же запрет работает для шорта
+        short = dict(o, direction="short", side="sell", stop=300.0, rank=dict(high, direction="short"))
+        cfg = dict(C.DEFAULT_CONFIG, require_backtest=False, allow_short=True)
+        res = {r["check"]: r["ok"] for r in m.check(short, cfg, now, st, offline=True)}
+        self.assertTrue(res["рейтинг"]); self.assertTrue(res["шорт"])
+        short["rank"] = dict(short["rank"], tier="обычный")
+        self.assertFalse({r["check"]: r["ok"] for r in m.check(short, cfg, now, st, offline=True)}["рейтинг"])
+
+    def test_news_expires_and_needs_source(self):
+        self.rank.add_mark("SBER", 1, "t", "https://www.moex.com/n1", "2026-10-29", self.now)
+        self.assertIsNone(self.rank.news_of("SBER", self.now))
+        with self.assertRaises(ValueError):
+            self.rank.add_mark("SBER", 1, "", "https://www.moex.com/n1", "2026-11-05", self.now)
+        with self.assertRaises(ValueError):
+            self.rank.add_mark("SBER", 2, "t", "https://www.moex.com/n1", "2026-11-05", self.now)
+
+    def test_news_sources(self):
+        self.rank.add_mark("A", 1, "t", "https://www.interfax.ru/1", "2026-11-05", self.now, "https://www.vedomosti.ru/2")
+        self.rank.add_mark("B", 0, "t", "https://smart-lab.ru/1", "2026-11-05", self.now)
+        for u, u2 in (("https://smart-lab.ru/1", None), ("https://www.interfax.ru/1", None),
+                      ("https://www.interfax.ru/1", "https://interfax.ru/2"), ("https://fakemoex.com/1", None),
+                      ("https://www.interfax.ru/1", "https://smart-lab.ru/2")):
+            with self.assertRaises(ValueError):
+                self.rank.add_mark("C", -1, "t", u, "2026-11-05", self.now, u2)
+
+    def test_mark_written_later_is_invisible_earlier(self):
+        self.rank.add_mark("SBER", 1, "t", "https://www.moex.com/n1", "2026-11-05", self.now)
+        self.assertIsNone(self.rank.news_of("SBER", C.parse_dt("2026-11-05 11:00")))
+
+    def test_short_mirrors_long(self):
+        up = [{"c": 100 + i * 0.3 + (2 if i % 2 else -2)} for i in range(120)]
+        c = self.rank.confirmations(up, "long")
+        s = self.rank.confirmations(up, "short")
+        self.assertTrue(c["EMA20"]); self.assertFalse(s["EMA20"])
+
+
 class TestRiskRules(unittest.TestCase):
     """Правила риска портфеля: позиции прошлых дней, неделя, просадка, корреляция, усреднение, стоп только вперёд."""
 
-    BASE = {"require_trend_alignment": False, "require_backtest": False, "min_reward_risk": 1.5, "regime_filter": False}
+    BASE = {"require_trend_alignment": False, "require_backtest": False, "min_reward_risk": 1.5, "regime_filter": False, "require_high_rank": False}
 
     def prep(self, extra_cfg=None, positions=None, events=None):
         tmp = tempfile.mkdtemp()
@@ -680,14 +793,14 @@ class TestProtection(unittest.TestCase):
                 os.environ.pop("TRADER_DIR") if env_old is None else os.environ.__setitem__("TRADER_DIR", env_old)
         self.assertEqual(seen, [True, False])
 
-    def _risk(self, cfg, setup, offline=True):
+    def _risk(self, cfg, setup, offline=True, positions=None):
         import importlib.util
         sp = importlib.util.spec_from_file_location("risk_check2", os.path.join(SK, "moex-risk", "check.py"))
         m = importlib.util.module_from_spec(sp)
         sp.loader.exec_module(m)
         o = {"direction": "long", "kind": "shares", "symbol": "SBER", "lots": 1, "stop": 280.0, "entry": 290.0, "target": None, "trail": 3,
              "max_loss": 100, "capital": 2900, "mode": "position", "date": DAY, "setup": setup}
-        st = {"realized_today": 0, "realized_week": 0, "open_risk": 0, "trades_today": 0, "positions": {}, "position_risk": {}}
+        st = {"realized_today": 0, "realized_week": 0, "open_risk": 0, "trades_today": 0, "positions": positions or {}, "position_risk": {}}
         with tempfile.TemporaryDirectory() as tmp:
             old = os.environ.get("TRADER_DIR")
             os.environ["TRADER_DIR"] = tmp
@@ -715,6 +828,52 @@ class TestProtection(unittest.TestCase):
             moex.candles = old
         self.assertFalse(res["тренд"])
         self.assertFalse(res["режим рынка"])
+
+    def test_real_order_cannot_switch_checks_off(self):
+        res = self._risk({"paper": False, "regime_filter": False}, "trend-pullback")
+        self.assertFalse(res["настройки"])
+
+    def test_correlation_failure_blocks(self):
+        import moex
+        old = moex.candles
+        def boom(*a, **k):
+            raise C.NetError("нет связи")
+        moex.candles = boom
+        try:
+            res = self._risk({}, "trend-pullback", offline=False, positions={"GAZP": {"lots": 1, "avg": 100, "stop": 90}})
+        finally:
+            moex.candles = old
+        self.assertFalse(res["корреляция"])
+
+    def test_closing_must_reduce_real_position(self):
+        import riskbook
+        o = {"symbol": "SBER", "side": "sell", "lots": 2, "kind": "shares", "lot_size": 10}
+        self.assertIsNone(riskbook.closing_problem(o, {"SBER": (20, "share")}))
+        self.assertIn("нет позиции", riskbook.closing_problem(o, {}))
+        self.assertIn("больше позиции", riskbook.closing_problem(o, {"SBER": (10, "share")}))
+        self.assertIn("увеличила", riskbook.closing_problem(dict(o, side="buy"), {"SBER": (20, "share")}))
+        self.assertIn("увеличила", riskbook.closing_problem(o, {"SBER": (-20, "share")}))
+
+    def test_paper_pass_not_valid_on_real_account(self):
+        spec = importlib.util.spec_from_file_location("broker_gate", os.path.join(SK, "moex-broker", "broker.py"))
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        tmp = tempfile.mkdtemp()
+        old = os.environ.get("TRADER_DIR")
+        os.environ["TRADER_DIR"] = tmp
+        try:
+            os.makedirs(os.path.join(tmp, "state"))
+            with open(os.path.join(tmp, "state", "risk.json"), "w") as f:
+                json.dump({"verdicts": {"fp": {"verdict": "PASS", "date": DAY, "paper": True}}}, f)
+            s = {"approvals": {"fp": {"at": DAY + " 10:00", "paper": True}}}
+            o = {"fingerprint": "fp"}
+            now = C.parse_dt(DAY + " 12:00")
+            self.assertTrue(m.readiness(o, now, s)[0] and m.readiness(o, now, s)[1])
+            with open(os.path.join(tmp, "config.json"), "w") as f:
+                json.dump({"paper": False}, f)
+            r = m.readiness(o, now, s)
+            self.assertFalse(r[0]); self.assertFalse(r[1])
+        finally:
+            os.environ.pop("TRADER_DIR") if old is None else os.environ.__setitem__("TRADER_DIR", old)
 
     def test_live_needs_sandbox_journal(self):
         import hypo
