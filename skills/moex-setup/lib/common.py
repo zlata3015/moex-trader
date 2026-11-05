@@ -87,7 +87,7 @@ DEFAULT_CONFIG = {
     "max_hold_days_position": 60,    # максимум дней в позиции для торговли по тренду
     "allow_short": False,
     "allow_futures": False,
-    "allow_bonds": True,
+    "allow_bonds": False,            # до проверки лестницы против фонда
     "allow_currency": False,
     "allow_evening_session": False,  # торговать ли в вечернюю сессию
     "allow_morning_session": False,  # торговать ли в утреннюю сессию
@@ -364,6 +364,8 @@ def round_step(price, step, mode="nearest"):
 
 def fingerprint(order):
     keys = ("symbol", "side", "lots", "entry", "stop", "target", "type", "date")
+    if order.get("closing"):
+        keys += ("time",)   # одинаковое закрытие той же бумаги в тот же день — это другая заявка
     s = json.dumps({k: order.get(k) for k in keys}, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
 

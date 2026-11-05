@@ -160,6 +160,15 @@ def cmd_place(a):
                   "max_loss": o.get("max_loss", 0), "risk_rub": o.get("max_loss_at_stop"), "stop": o.get("stop"),
                   "target": o.get("target"), "setup": o.get("setup"), "closing": o.get("closing", False),
                   "status": r.get("executionReportStatus"), "account": acc}, now)
+    if o.get("closing"):
+        # Стопы снимаем только после принятой заявки: при отказе брокера позиция остаётся под защитой.
+        for x in tinvest.stop_orders(acc, sandbox):
+            if x.get("instrumentUid") == ins.get("uid"):
+                try:
+                    tinvest.cancel_stop(acc, x["stopOrderId"], sandbox)
+                    print("Снята стоп-заявка %s" % x["stopOrderId"])
+                except C.NetError as e:
+                    print("⚠ Не удалось снять стоп-заявку %s, снимите её в приложении: %s" % (x["stopOrderId"], e))
     print("Заявка отправлена (%s): %s, статус %s, исполнено лотов %s из %s" % (
         "песочница" if sandbox else "РЕАЛЬНЫЙ СЧЁТ", r.get("orderId", oid), r.get("executionReportStatus"),
         r.get("lotsExecuted", "?"), r.get("lotsRequested", o["lots"])))
@@ -207,6 +216,11 @@ def reconcile_diff(acc, sandbox, cfg):
         a, b = local.get(sym, 0), fact.get(sym, 0)
         if abs(a - b) > 1e-6:
             out.append("%s: в учёте %s, на счёте %s" % (sym, C.num(a, 0), C.num(b, 0)))
+    import tinvest
+    held = {x.get("instrumentUid") for x in tinvest.portfolio(acc, sandbox).get("positions", [])}
+    for x in tinvest.stop_orders(acc, sandbox):
+        if x.get("instrumentUid") not in held:
+            out.append("стоп-заявка %s без позиции" % x.get("stopOrderId"))
     return out
 
 
@@ -284,17 +298,8 @@ def cmd_protect(a):
         better = plan["stop"] > stop if o["side"] == "buy" else plan["stop"] < stop
         if better:
             stop = plan["stop"]   # подтянутый трейлингом стоп
-    if a.replace:
-        for e in s["events"]:
-            if e.get("type") == "stop_placed" and e.get("fingerprint") == o["fingerprint"] and not e.get("cancelled") \
-                    and e.get("stop_type") == "stop_loss":
-                try:
-                    tinvest.cancel_stop(p["account"], e["stop_order_id"], p["sandbox"])
-                    e["cancelled"] = C.fmt_dt(now)
-                    print("Снят старый стоп %s" % C.px(e["price"]))
-                except C.NetError as err:
-                    print("Не удалось снять старый стоп %s: %s" % (e.get("stop_order_id"), err))
-        save_state(s)
+    old = [e for e in s["events"] if a.replace and e.get("type") == "stop_placed" and e.get("fingerprint") == o["fingerprint"]
+           and not e.get("cancelled") and e.get("stop_type") == "stop_loss"]
     todo = [("stop_loss", stop)]
     if o.get("target") is not None and not a.replace:
         todo.append(("take_profit", o["target"]))
@@ -308,6 +313,16 @@ def cmd_protect(a):
             print("Выставлен %s по %s на %d лот(ов)" % ("стоп-лосс" if typ == "stop_loss" else "тейк-профит", C.px(price), done))
         except C.NetError as e:
             print("Не удалось выставить %s: %s" % (typ, e))
+    # Старый стоп снимаем только после нового: позиция ни на минуту не остаётся без защиты.
+    if "stop_loss" in ok:
+        for e in old:
+            try:
+                tinvest.cancel_stop(p["account"], e["stop_order_id"], p["sandbox"])
+                e["cancelled"] = C.fmt_dt(now)
+                print("Снят старый стоп %s" % C.px(e["price"]))
+            except C.NetError as err:
+                print("⚠ Не удалось снять старый стоп %s, снимите его в приложении: %s" % (e.get("stop_order_id"), err))
+        save_state(s)
     if len(ok) < len(todo):
         print("⚠ Защита выставлена не полностью. Песочница может не поддерживать стоп-заявки — "
               "поставьте ценовые оповещения: moex-alerts alerts.py add --from-plan, и закрывайте вручную.")
@@ -338,7 +353,7 @@ def cmd_flatten(a):
          "date": now.strftime("%Y-%m-%d"), "time": C.fmt_dt(now)}
     o["fingerprint"] = C.fingerprint(o)
     C.save_json(C.tpath("orders.json"), [o])
-    print("Заявка на закрытие: %s %s %d лот(ов) по рынку. Не забудьте снять стоп-заявки в приложении." % (
+    print("Заявка на закрытие: %s %s %d лот(ов) по рынку. Стоп-заявки по бумаге снимутся после отправки." % (
         "ПРОДАТЬ" if side == "sell" else "КУПИТЬ", a.symbol, int(lots)))
     print("Дальше: покажите тикет (show), получите «да» (approve) и отправьте (place --index 1).")
 

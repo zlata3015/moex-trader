@@ -232,6 +232,12 @@ def active_orders(account_id, sandbox=True):
     return call("OrdersService", "GetOrders", {"accountId": account_id}).get("orders", [])
 
 
+def stop_orders(account_id, sandbox=True):
+    if sandbox:
+        return call("SandboxService", "GetSandboxStopOrders", {"accountId": account_id}, sandbox=True).get("stopOrders", [])
+    return call("StopOrdersService", "GetStopOrders", {"accountId": account_id}).get("stopOrders", [])
+
+
 def cancel_stop(account_id, stop_order_id, sandbox=True):
     if sandbox:
         return call("SandboxService", "CancelSandboxStopOrder", {"accountId": account_id, "stopOrderId": stop_order_id},

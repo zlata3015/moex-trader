@@ -1601,6 +1601,63 @@
    "attempts": 1
   },
   {
+   "id": "S01",
+   "claim": "Трендовая стратегия акций, откат к EMA10",
+   "family": "equities-trend",
+   "rule": "Правила strategiya-trend-itogi.md, вход откат к растущей EMA10",
+   "kind": "frequent",
+   "source": "proverka-skolzyashchih-srednih.md",
+   "prereg": true,
+   "status": "candidate",
+   "result": {
+    "trades": 1275,
+    "avg_r": 0.39,
+    "avg_r_2024_2026": 0.1
+   },
+   "reasons": [
+    "кандидат для песочницы, с 2025 года преимущество почти исчезло"
+   ],
+   "attempts": 1
+  },
+  {
+   "id": "S02",
+   "claim": "Трендовая стратегия акций, пробой 20 дней",
+   "family": "equities-trend",
+   "rule": "Правила strategiya-trend-itogi.md, вход закрытие выше максимума 20 дней",
+   "kind": "frequent",
+   "source": "proverka-skolzyashchih-srednih.md",
+   "prereg": true,
+   "status": "candidate",
+   "result": {
+    "trades": 861,
+    "avg_r": 0.5,
+    "avg_r_2024_2026": 0.14
+   },
+   "reasons": [
+    "кандидат для песочницы, с 2025 года преимущество почти исчезло"
+   ],
+   "attempts": 1
+  },
+  {
+   "id": "S03",
+   "claim": "Контроль: откат к EMA20",
+   "family": "equities-trend",
+   "rule": "Те же правила, вход откат к растущей EMA20, только для сравнения в песочнице",
+   "kind": "frequent",
+   "source": "proverka-skolzyashchih-srednih.md",
+   "prereg": true,
+   "status": "candidate",
+   "result": {
+    "trades": 1083,
+    "avg_r": 0.35,
+    "avg_r_2024_2026": -0.01
+   },
+   "reasons": [
+    "кандидат для песочницы, с 2025 года преимущество почти исчезло"
+   ],
+   "attempts": 1
+  },
+  {
    "id": "T01",
    "claim": "Фиксированный стоп и тейк 2R лучше подтягиваемого стопа",
    "family": "equities-exit",

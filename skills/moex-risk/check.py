@@ -31,6 +31,8 @@ def check(o, cfg, now, st, offline=False):
         return res
     why = C.halted()
     add(why is None, "аварийная остановка", "новые заявки запрещены: %s" % why if why else "не включена")
+    if offline and not cfg["paper"]:
+        add(False, "офлайн", "реальная заявка без проверки данных запрещена")
     long_ = o["direction"] == "long"
     account = cfg["account_size"]
     max_loss = C.money_limit(cfg["max_loss_per_trade"], account)
@@ -140,6 +142,7 @@ def check(o, cfg, now, st, offline=False):
     # фьючерсы: лимиты цены и экспирация
     sp = o.get("spec") or {}
     if k == "futures":
+        add(cfg["paper"], "фьючерсы", "только песочница до прохождения этапа 4" if not cfg["paper"] else "песочница")
         hl, ll = sp.get("high_limit"), sp.get("low_limit")
         if hl and ll:
             lv = [x for x in (o["stop"], o.get("target")) if x is not None]
@@ -163,8 +166,9 @@ def check(o, cfg, now, st, offline=False):
     if o["mode"] == "swing" and k in ("shares",) and long_ and not offline:
         try:
             nd = moex.next_dividend(o["symbol"], now)
-        except C.NetError:
+        except C.NetError as e:
             nd = None
+            add(not cfg["block_dividend_gap"], "дивидендный гэп", "проверка не выполнена: %s" % str(e)[:80], warn=not cfg["block_dividend_gap"])
         if nd and nd.get("date"):
             days = (datetime.strptime(nd["date"], "%Y-%m-%d") - now).days
             hold = (o.get("max_hold_days") or 10) * 1.5
@@ -189,8 +193,8 @@ def check(o, cfg, now, st, offline=False):
             add(got == want, "тренд", "месяц %s, неделя %s, день %s — %s" % (
                 trend.DIR_RU[td["1M"]["dir"]], trend.DIR_RU[td["1w"]["dir"]], trend.DIR_RU[td["1d"]["dir"]],
                 "сделка по тренду" if got == want else ("сделка ПРОТИВ тренда" if got else td["verdict"]["why"])))
-        except (C.NetError, KeyError, IndexError):
-            pass
+        except (C.NetError, KeyError, IndexError) as e:
+            add(False, "тренд", "проверка не выполнена: %s" % str(e)[:80])
     # бэктест
     bt = C.load_json(C.tpath("backtest", "summary.json"), {}) or {}
     key = "%s|%s" % (o["symbol"], "orb" if o.get("setup") == "orb" else
@@ -215,8 +219,16 @@ def check(o, cfg, now, st, offline=False):
             up = c[-1] > e50
             add(up or o["mode"] == "intraday", "режим рынка", "IMOEX %s EMA50 дневной (%s vs %s)" % (
                 "выше" if up else "ниже", C.px(c[-1]), C.px(e50)), warn=not up)
-        except (C.NetError, IndexError, TypeError):
-            pass
+        except (C.NetError, IndexError, TypeError) as e:
+            add(False, "режим рынка", "проверка не выполнена: %s" % str(e)[:80])
+    # статус стратегии в реестре и этап проекта
+    import hypo
+    sid, stat = hypo.strategy_status(o.get("setup"))
+    if cfg["paper"]:
+        bad = stat in ("rejected", "planned")
+        add(not bad, "реестр", "%s: статус %s" % (sid or o.get("setup"), stat or "нет в реестре, только для учебной сделки"), warn=stat is None)
+    else:
+        add(stat == "live", "этап", "реальная заявка только для стратегии со статусом live, сейчас %s" % (stat or "нет в реестре"))
     return res
 
 

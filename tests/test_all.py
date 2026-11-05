@@ -680,6 +680,58 @@ class TestProtection(unittest.TestCase):
                 os.environ.pop("TRADER_DIR") if env_old is None else os.environ.__setitem__("TRADER_DIR", env_old)
         self.assertEqual(seen, [True, False])
 
+    def _risk(self, cfg, setup, offline=True):
+        import importlib.util
+        sp = importlib.util.spec_from_file_location("risk_check2", os.path.join(SK, "moex-risk", "check.py"))
+        m = importlib.util.module_from_spec(sp)
+        sp.loader.exec_module(m)
+        o = {"direction": "long", "kind": "shares", "symbol": "SBER", "lots": 1, "stop": 280.0, "entry": 290.0, "target": None, "trail": 3,
+             "max_loss": 100, "capital": 2900, "mode": "position", "date": DAY, "setup": setup}
+        st = {"realized_today": 0, "realized_week": 0, "open_risk": 0, "trades_today": 0, "positions": {}, "position_risk": {}}
+        with tempfile.TemporaryDirectory() as tmp:
+            old = os.environ.get("TRADER_DIR")
+            os.environ["TRADER_DIR"] = tmp
+            try:
+                return {r["check"]: r["ok"] for r in m.check(o, dict(C.DEFAULT_CONFIG, require_backtest=False, **cfg), C.parse_dt(DAY + " 12:00"), st, offline=offline)}
+            finally:
+                os.environ.pop("TRADER_DIR") if old is None else os.environ.__setitem__("TRADER_DIR", old)
+
+    def test_real_order_needs_live_status(self):
+        self.assertTrue(self._risk({}, "trend-pullback")["реестр"])
+        real = self._risk({"paper": False}, "trend-pullback")
+        self.assertFalse(real["этап"])
+        self.assertFalse(real["офлайн"])
+        self.assertFalse(self._risk({"paper": False}, "manual", offline=False)["этап"])
+
+    def test_network_failure_blocks(self):
+        import moex
+        old = moex.candles
+        def boom(*a, **k):
+            raise C.NetError("нет связи")
+        moex.candles = boom
+        try:
+            res = self._risk({}, "trend-pullback", offline=False)
+        finally:
+            moex.candles = old
+        self.assertFalse(res["тренд"])
+        self.assertFalse(res["режим рынка"])
+
+    def test_live_needs_sandbox_journal(self):
+        import hypo
+        reg = {"hypotheses": [{"id": "S01", "status": "candidate", "family": "equities-trend"}]}
+        hypo.promote(reg, "S01", "sandbox")
+        with self.assertRaises(ValueError):
+            hypo.promote(reg, "S01", "live", [])
+        j = [{"setup": "trend-pullback", "closed": "2026-%02d-10 12:00" % (1 + i % 6)} for i in range(50)]
+        hypo.promote(reg, "S01", "live", j)
+        self.assertEqual(reg["hypotheses"][0]["status"], "live")
+
+    def test_repeat_close_is_new_order(self):
+        o = {"symbol": "SBER", "side": "sell", "lots": 1, "type": "market", "date": DAY, "closing": True, "time": DAY + " 12:00"}
+        self.assertNotEqual(C.fingerprint(o), C.fingerprint(dict(o, time=DAY + " 15:00")))
+        e = {"symbol": "SBER", "side": "buy", "lots": 1, "type": "limit", "date": DAY, "time": DAY + " 12:00"}
+        self.assertEqual(C.fingerprint(e), C.fingerprint(dict(e, time=DAY + " 15:00")))
+
     def test_market_close_has_no_price(self):
         sys.path.insert(0, os.path.join(SK, "moex-broker"))
         import broker
@@ -788,6 +840,7 @@ def _write_tinvest_fixtures():
     w(sb, "SandboxService_PostSandboxStopOrder", {"stopOrderId": "stop-1"})
     w(sb, "OperationsService_GetSandboxPortfolio", {"positions": []})
     w(sb, "SandboxService_GetSandboxPortfolio", {"positions": []})
+    w(sb, "SandboxService_GetSandboxStopOrders", {"stopOrders": []})
     w(sb, "SandboxService_GetSandboxAccounts", {"accounts": [{"id": "sb-123", "name": "moex-trader"}]})
 
 

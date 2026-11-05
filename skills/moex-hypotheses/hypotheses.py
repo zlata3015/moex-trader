@@ -100,7 +100,7 @@ def cmd_signals(a):
 def cmd_promote(a):
     reg = H.load(REG)
     try:
-        H.promote(reg, a.id, a.status)
+        H.promote(reg, a.id, a.status, C.load_json(C.tpath("journal.json"), []) or [])
     except ValueError as e:
         C.die(str(e))
     H.save(REG, reg)

@@ -4,6 +4,7 @@
 """
 import datetime as dt
 import json
+import os
 import random
 
 VERDICTS = ("planned", "rejected", "risk_filter", "candidate", "confirmed", "sandbox", "live")
@@ -295,6 +296,34 @@ def find(reg, hid):
     return None
 
 
+STRATEGIES = {"trend-pullback": "S01", "trend-breakout": "S02", "trend-control-ema20": "S03"}
+
+
+def registry_path():
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.environ.get("MOEX_HYPOTHESES") or os.path.join(here, "..", "..", "moex-hypotheses", "registry.json")
+
+
+def strategy_status(setup):
+    """Сетап заявки -> (id в реестре, статус). Нет в реестре: (None, None)."""
+    sid = STRATEGIES.get(setup)
+    if not sid:
+        return None, None
+    h = find(load(registry_path()), sid)
+    return sid, h["status"] if h else None
+
+
+def sandbox_evidence(journal, setup, min_trades=50, min_days=60):
+    """Хватает ли учебных сделок сетапа для перехода на реальные деньги."""
+    tr = sorted(t["closed"][:10] for t in journal if t.get("setup") == setup and t.get("closed"))
+    if len(tr) < min_trades:
+        return False, "закрытых сделок %d из %d" % (len(tr), min_trades)
+    days = (dt.datetime.strptime(tr[-1], "%Y-%m-%d") - dt.datetime.strptime(tr[0], "%Y-%m-%d")).days
+    if days < min_days:
+        return False, "песочница %d дней из %d" % (days, min_days)
+    return True, "закрытых сделок %d за %d дней" % (len(tr), days)
+
+
 def family_size(reg, family):
     """Сколько гипотез семейства уже проверено или запланировано: отвергнутые тоже считаются."""
     return sum(1 for h in reg["hypotheses"] if h["family"] == family)
@@ -335,12 +364,19 @@ def reject_external(reg, hid, reason, doc):
     return h
 
 
-def promote(reg, hid, status):
-    """Только вперёд по этапам: confirmed -> sandbox -> live."""
+def promote(reg, hid, status, journal=None):
+    """Только вперёд по этапам: confirmed -> sandbox -> live. Стратегии из STRATEGIES идут в песочницу и из candidate.
+    Перевод стратегии в live требует журнала песочницы: 50+ закрытых сделок за 60+ дней."""
     h = find(reg, hid)
     order = ("confirmed", "sandbox", "live")
-    if h is None or h["status"] not in order[:-1] or status != order[order.index(h["status"]) + 1]:
+    setup = next((k for k, v in STRATEGIES.items() if v == hid), None)
+    start = "candidate" if setup and h and h["status"] == "candidate" and status == "sandbox" else None
+    if h is None or (not start and (h["status"] not in order[:-1] or status != order[order.index(h["status"]) + 1])):
         raise ValueError("перевод запрещён: нужен следующий этап после confirmed")
+    if setup and status == "live":
+        ok, why = sandbox_evidence(journal or [], setup)
+        if not ok:
+            raise ValueError("перевод запрещён: " + why)
     h["status"] = status
     return h
 
