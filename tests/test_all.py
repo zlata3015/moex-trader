@@ -538,6 +538,14 @@ class TestHypotheses(unittest.TestCase):
         self.assertEqual(r["max_dd"], 0)
         self.assertEqual(r["hold_dd"], -1.0)
 
+    def test_reject_external_only_rejects_planned(self):
+        reg = {"hypotheses": []}
+        self.H.add(reg, "X1", "утверждение", "f", "правило")
+        self.H.reject_external(reg, "X1", "отказ", "документ")
+        self.assertEqual(reg["hypotheses"][0]["status"], "rejected")
+        with self.assertRaises(ValueError):
+            self.H.reject_external(reg, "X1", "снова", "документ")
+
     def test_registry_file_valid(self):
         reg = self.H.load(os.path.join(SK, "moex-hypotheses", "registry.json"))
         self.assertEqual(self.H.tradable(reg), [])

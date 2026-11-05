@@ -164,3 +164,69 @@ def main(reg_path, periods, dry=False):
     if not dry:
         H.save(reg_path, reg)
     print(C.table(rows, ["id", "статус", "годовых", "премия", "просадка", "p", "задержка", "заходы"]))
+
+
+def cycle(reg_path, periods):
+    """G02, G16, G17, G03, G18, G19 и варианты B23–B28. Уже записанные гипотезы не пересчитываются в реестре."""
+    today = C.now_msk().strftime("%d.%m.%Y")
+    reg = H.load(reg_path)
+    long5, s1, m5 = index(LONG), index("RUGBITR1Y"), index("RUGBITR5Y")
+    key = key_rate(today)
+    cal = [d for d, _ in long5 if d >= "2013-09-17"]
+    l, s, mid = H.step_values(cal, long5), H.step_values(cal, s1), H.step_values(cal, m5)
+    k = H.step_values(cal, key)
+    me = [d for d in month_ends(cal) if d >= "2014-01-06"]
+    zc = curve(me)
+    money = H.money_index(cal, key)
+    pos_of = {d: i for i, d in enumerate(cal)}
+    sign, changed, sign_at, chg_at = 0, None, {}, {}
+    for i, d in enumerate(cal):
+        if i and k[i - 1] is not None and k[i] != k[i - 1]:
+            sign, changed = (1 if k[i] > k[i - 1] else -1), d
+        sign_at[d], chg_at[d] = sign, changed
+    xs = [a / b for a, b in zip(l, money)]
+
+    def flag(fn):
+        return [(d, 1.0 if fn(d, pos_of[d]) else 0.0) for d in me]
+
+    def ahead(d, i):
+        ke = ((1 + k[i] / 1200) ** 12 - 1) * 100
+        y1 = zc.get(d, {}).get("1.0")
+        return sign_at[d] > 0 and y1 is not None and y1 < ke - 1.0
+
+    def paused(d, n):
+        return chg_at[d] is not None and H.days_between(chg_at[d], d) / 30.4 >= n
+
+    def mom6(i):
+        return i >= 126 and xs[i] / xs[i - 126] > 1
+
+    hike = flag(lambda d, i: sign_at[d] > 0)
+    since = "2014-03-03"
+    pos = H.positions(cal, hike)
+    rot = [100.0]
+    for i in range(1, len(cal)):
+        a = s if pos[i] else l
+        rot.append(rot[-1] * a[i] / a[i - 1] * (1 - 0.002 * abs(pos[i] - pos[i - 1])))
+    items = [
+        ("G02", s, hike, 0.002, l), ("G16", s, hike, 0.001, None), ("G17", rot, [(cal[0], 1.0)], 0.001, None),
+        ("G03", l, flag(ahead), 0.001, None),
+        ("G18", l, flag(lambda d, i: ahead(d, i) or sign_at[d] < 0), 0.001, None),
+        ("G19", mid, flag(lambda d, i: ahead(d, i) or sign_at[d] < 0), 0.001, None),
+    ]
+    for hid, n in (("B23", 2), ("B24", 3), ("B25", 4), ("B26", 6)):
+        items.append((hid, l, flag(lambda d, i, n=n: sign_at[d] < 0 or paused(d, n)), 0.001, None))
+    items.append(("B27", l, flag(lambda d, i: sign_at[d] < 0 and mom6(i)), 0.001, None))
+    items.append(("B28", l, flag(lambda d, i: sign_at[d] < 0 or mom6(i)), 0.001, None))
+    rows = []
+    for hid, asset, sig, cost, base in items:
+        m = H.evaluate(cal, asset, key, sig, since, periods, cost=cost, money=base)
+        h = H.find(reg, hid)
+        if h["status"] == "planned":
+            H.record(reg, hid, m)
+        rows.append([hid, h["status"], m["annual"], m["premium"], m["max_dd"], m["p"], m["premium_late"],
+                     "%d/%d" % (m["legs_won"], m["legs"]), int(sig[-1][1])])
+    H.save(reg_path, reg)
+    print(C.table(rows, ["id", "статус", "годовых", "премия", "просадка", "p", "задержка", "заходы", "сейчас"]))
+    print("Размер семейства:", H.family_size(reg, "bonds-rate"))
+    months = [d for d, v in dict(items[3][2]).items() if v]
+    print("Месяцы сигнала G03:", " ".join(x[:7] for x in months))

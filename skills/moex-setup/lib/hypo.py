@@ -281,6 +281,15 @@ def record(reg, hid, metrics):
     return h
 
 
+def reject_external(reg, hid, reason, doc):
+    """Отказ, полученный другой проверкой. Вручную можно только отвергнуть, но не подтвердить."""
+    h = find(reg, hid)
+    if h is None or h["status"] != "planned":
+        raise ValueError("переносить можно только запланированную гипотезу")
+    h["status"], h["reasons"], h["external"] = "rejected", [reason], doc
+    return h
+
+
 def promote(reg, hid, status):
     """Только вперёд по этапам: confirmed -> sandbox -> live."""
     h = find(reg, hid)
