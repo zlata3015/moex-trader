@@ -9,6 +9,7 @@
   hypotheses.py signals                                          только сигналы, допущенные к рекомендациям
   hypotheses.py promote B01 sandbox                              следующий этап после confirmed
   hypotheses.py reject G05 --reason "..." --doc документ          перенести отказ из другой проверки
+  hypotheses.py run-sectors                                      секторы и ставка: G07, G20
   hypotheses.py run-cycle                                        гипотезы о цикле ставки G02, G03 и варианты
   hypotheses.py run-bonds [--dry]                                воспроизвести проверку облигаций
 """
@@ -116,6 +117,11 @@ def cmd_cycle(a):
     bonds_rate.cycle(REG, PERIODS)
 
 
+def cmd_sectors(a):
+    import sectors
+    sectors.run(REG, PERIODS)
+
+
 def cmd_reject(a):
     reg = H.load(REG)
     try:
@@ -144,6 +150,7 @@ def main():
     p = sub.add_parser("promote"); p.add_argument("id"); p.add_argument("status", choices=["sandbox", "live"]); p.set_defaults(f=cmd_promote)
     p = sub.add_parser("run-bonds"); p.add_argument("--dry", action="store_true"); p.set_defaults(f=cmd_bonds)
     p = sub.add_parser("run-cycle"); p.set_defaults(f=cmd_cycle)
+    p = sub.add_parser("run-sectors"); p.set_defaults(f=cmd_sectors)
     p = sub.add_parser("reject"); p.add_argument("id"); p.add_argument("--reason", required=True)
     p.add_argument("--doc", required=True); p.set_defaults(f=cmd_reject)
     a = ap.parse_args()

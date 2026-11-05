@@ -546,6 +546,17 @@ class TestHypotheses(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.H.reject_external(reg, "X1", "снова", "документ")
 
+    def test_evaluate_events(self):
+        cal = ["2020-%02d-%02d" % (m, d) for m in range(1, 13) for d in range(1, 26)]
+        asset = [100 * 1.01 ** i for i in range(len(cal))]
+        base = [100.0] * len(cal)
+        ev = [cal[10], cal[12], cal[100]]
+        r = self.H.evaluate_events(cal, asset, base, ev, 5, [("all", "2020", "2020")], cost=0.001)
+        self.assertEqual(r["events"], 2)  # вторая попала в открытую позицию
+        self.assertAlmostEqual(r["premium"], (1.01 ** 5 - 1 - 0.002) * 100, places=2)
+        self.assertEqual(r["legs_won"], 2)
+        self.assertEqual(self.H.verdict(r, 1)[0] in ("candidate", "rejected", "confirmed"), True)
+
     def test_registry_file_valid(self):
         reg = self.H.load(os.path.join(SK, "moex-hypotheses", "registry.json"))
         self.assertEqual(self.H.tradable(reg), [])

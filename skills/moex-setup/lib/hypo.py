@@ -193,6 +193,51 @@ def evaluate(calendar, asset, key_rate, signal, since, periods, cost=0.001, spre
     }
 
 
+def evaluate_events(calendar, asset, base, events, horizon, periods, cost=0.001, delay=1, late=5):
+    """Событийный разбор: покупка закрытием через delay дней после события, удержание horizon дней.
+
+    Результат — избыток актива над базой за вычетом издержек, % на событие. События, попадающие
+    в уже открытую позицию, пропускаются. Поля совместимы с verdict.
+    """
+    pos = {d: i for i, d in enumerate(calendar)}
+
+    def excess(d_lag, c):
+        rows, busy = [], -1
+        for e in sorted(events):
+            if e not in pos:
+                continue
+            i = pos[e] + d_lag
+            if i <= busy or i + horizon >= len(calendar):
+                continue
+            busy = i + horizon
+            b = base[i + horizon] / base[i] - 1 if base else 0.0
+            rows.append((calendar[i], (asset[i + horizon] / asset[i] - 1 - b - 2 * c) * 100))
+        return rows
+
+    def mean(xs):
+        return sum(xs) / len(xs) if xs else 0.0
+
+    rows = excess(delay, cost)
+    x = [v for _, v in rows]
+    srt = sorted(x)
+    per = {}
+    for name, y0, y1 in periods:
+        p = [v for d, v in rows if y0 <= d[:4] <= y1]
+        if p:
+            per[name] = round(mean(p), 3)
+    return {
+        "since": rows[0][0] if rows else None, "till": rows[-1][0] if rows else None, "events": len(x),
+        "premium": round(mean(x), 3), "median": round(srt[len(srt) // 2], 3) if x else 0.0,
+        "hit": round(sum(1 for v in x if v > 0) / len(x) * 100, 1) if x else 0.0,
+        "worst": round(srt[0], 2) if x else 0.0, "best": round(srt[-1], 2) if x else 0.0,
+        "p": round(block_bootstrap_p(x, block=3), 3), "periods": per,
+        "premium_late": round(mean([v for _, v in excess(delay + late, cost)]), 3),
+        "premium_cost2": round(mean([v for _, v in excess(delay, cost * 2)]), 3),
+        "legs": len(x), "legs_won": sum(1 for v in x if v > 0), "switches": 2 * len(x),
+        "max_dd": round(srt[0], 2) if x else 0.0, "hold_dd": 0.0,
+    }
+
+
 def verdict(m, family_size, kind="rare", crit=None):
     """Вердикт только по порогам. Возвращает (статус, причины)."""
     c = crit or CRITERIA
