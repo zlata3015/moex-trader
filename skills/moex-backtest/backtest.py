@@ -235,6 +235,8 @@ def main():
     p.set_defaults(fn=T.cmd_trend)
     p = sub.add_parser("trend-optimize"); T.add_args(p); p.set_defaults(fn=lambda a: T.optimize(a.symbol, a))
     p = sub.add_parser("trend-universe"); T.add_args(p, sym=False); p.set_defaults(fn=T.cmd_universe)
+    p = sub.add_parser("trend-portfolio", help="один счёт по всем бумагам + фонд денежного рынка")
+    T.add_args(p, sym=False); p.set_defaults(fn=T.cmd_portfolio)
     a = ap.parse_args()
     if getattr(a, "strategy", None) == "swing" and a.days == 120:
         a.days = 1500

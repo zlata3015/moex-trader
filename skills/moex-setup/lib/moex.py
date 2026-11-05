@@ -345,10 +345,36 @@ def last_price(symbol, kind=None):
 # ---------------------------------------------------------------- корпоративные события
 
 def dividends(symbol):
-    js = _get("/securities/%s/dividends.json" % symbol)
-    rows = table(js, "dividends")
-    return [{"date": r.get("registryclosedate"), "value": r.get("value"), "currency": r.get("currencyid")}
-            for r in rows]
+    """История дивидендов: ISS (если отдаёт), иначе таблица smart-lab.ru.
+    -> [{date: дата закрытия реестра, last_day: последний день покупки под дивиденд, value, currency}]."""
+    try:
+        js = _get("/securities/%s/dividends.json" % symbol)
+        rows = table(js, "dividends")
+        if rows:
+            return [{"date": r.get("registryclosedate"), "value": r.get("value"), "currency": r.get("currencyid")}
+                    for r in rows]
+    except C.NetError:
+        pass
+    return smartlab_dividends(symbol)
+
+
+def smartlab_dividends(symbol):
+    import html as _html
+    import re
+    raw = C.http("https://smart-lab.ru/q/%s/dividend/" % symbol, headers={"User-Agent": "Mozilla/5.0"}, retries=1)
+    text = raw.decode("utf-8", "replace")
+    out = []
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", text, re.S):
+        cells = [_html.unescape(re.sub(r"<[^>]+>", "", c)).strip() for c in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row, re.S)]
+        if len(cells) >= 5 and cells[0].upper() == symbol.upper() and re.match(r"\d\d\.\d\d\.\d{4}", cells[1]):
+            val = re.sub(r"[^\d,\.]", "", cells[4]).replace(",", ".")
+            if not val:
+                continue
+            iso = lambda x: "%s-%s-%s" % (x[6:10], x[3:5], x[0:2]) if re.match(r"\d\d\.\d\d\.\d{4}", x) else None
+            out.append({"last_day": iso(cells[1]), "date": iso(cells[2]) or iso(cells[1]), "value": float(val),
+                        "currency": "RUB", "source": "smart-lab"})
+    out.sort(key=lambda d: d["date"] or "")
+    return out
 
 
 def next_dividend(symbol, today=None):
@@ -375,3 +401,29 @@ def indices_of(symbol):
 def sitenews(limit=50):
     js = _get("/sitenews.json", {"limit": limit})
     return table(js, "sitenews")
+
+
+def adjust_splits(bars, divs=None, threshold=2.5):
+    """Учёт дроблений и консолидаций: скачок открытия к прошлому закрытию больше чем в threshold раз
+    (на Мосбирже за день такого не бывает) считается сменой номинала; вся история до него пересчитывается.
+    divs (список {date, value}) пересчитываются тем же коэффициентом. -> (bars, divs, [(дата, коэффициент)])."""
+    bars = [dict(b) for b in bars]
+    divs = [dict(d) for d in (divs or [])]
+    events = []
+    for i in range(len(bars) - 1, 0, -1):
+        prev, cur = bars[i - 1]["c"], bars[i]["o"]
+        if prev <= 0 or cur <= 0:
+            continue
+        ratio = cur / prev
+        if ratio > threshold or ratio < 1 / threshold:
+            f = round(ratio) if ratio > 1 else 1.0 / round(1 / ratio)
+            date = bars[i]["t"][:10]
+            for b in bars[:i]:
+                for k in ("o", "h", "l", "c"):
+                    b[k] *= f
+                b["v"] = b.get("v", 0) / f
+            for d in divs:
+                if d.get("value") and (d.get("date") or "") < date:
+                    d["value"] *= f
+            events.append((date, f))
+    return bars, divs, events

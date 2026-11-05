@@ -25,6 +25,45 @@ def _minstep(bars):
     return min(diffs) if diffs else 0.01
 
 
+def load_divs(sym, a):
+    if a.files_dir:
+        p = os.path.join(a.files_dir, "%s_DIV.json" % sym)
+        if os.path.exists(p):
+            return C.load_json(p, [])
+    try:
+        return moex.dividends(sym)
+    except C.NetError:
+        return []
+
+
+def apply_dividends(trades, daily, divs, sym=None):
+    """Дивиденды в результате сделок: лонг через дату отсечки получает дивиденд, шорт — платит.
+    Последний день с дивидендом — торговый день перед датой закрытия реестра (до 31.07.2023 — за два дня, режим T+2)."""
+    if not divs:
+        return trades
+    dates = [b["t"][:10] for b in daily]
+    exd = []
+    for d in divs:
+        rd = d.get("date")
+        if not rd or not d.get("value"):
+            continue
+        if d.get("last_day"):
+            exd.append((d["last_day"], float(d["value"])))
+            continue
+        before = [x for x in dates if x < rd]
+        back = 1 if rd >= "2023-07-31" else 2
+        if len(before) >= back:
+            exd.append((before[-back], float(d["value"])))   # держим на закрытии этого дня -> получаем дивиденд
+    for t in trades:
+        got = sum(v for x, v in exd if t["date"] <= x < t["exit_date"] or (t["outcome"] == "открыта" and t["date"] <= x))
+        if got:
+            risk = abs(t["entry"] - t["stop"])
+            adj = got / risk * (1 if t["dir"] == "long" else -1)
+            t["dividend"] = round(got, 4)
+            t["r"] = round(t["r"] + adj, 3)
+    return trades
+
+
 def load(sym, a):
     """Дневки + месячные свечи: из папки с файлами (SYM_D.csv, SYM_M.csv) или из ISS."""
     if a.files_dir:
@@ -41,6 +80,13 @@ def load(sym, a):
         except C.NetError:
             monthly = None
         spec = moex.spec(sym)
+    daily, divs, ev = moex.adjust_splits(daily, load_divs(sym, a))
+    if monthly:
+        monthly, _, _ = moex.adjust_splits(monthly)
+    if getattr(a, "since", None):
+        pass
+    spec["divs"] = divs
+    spec["splits"] = ev
     regime = None
     if a.regime:
         if a.files_dir and os.path.exists(os.path.join(a.files_dir, "IMOEX_D.csv")):
@@ -56,10 +102,11 @@ def params(a):
             "setups": tuple(a.setups.split(",")), "use_month": not a.no_month}
 
 
-def run(daily, monthly, spec, regime, cfg, p):
-    return trend.backtest(daily, spec, cfg, monthly=monthly, stop_atr=p["stop_atr"], trail_atr=p["trail_atr"],
-                          allow_short=p["allow_short"], max_hold=p["max_hold"], setups=p["setups"], regime=regime,
-                          use_month=p["use_month"])
+def run(daily, monthly, spec, regime, cfg, p, start_date=None):
+    tr = trend.backtest(daily, spec, cfg, monthly=monthly, stop_atr=p["stop_atr"], trail_atr=p["trail_atr"],
+                        allow_short=p["allow_short"], max_hold=p["max_hold"], setups=p["setups"], regime=regime,
+                        use_month=p["use_month"], start_date=start_date)
+    return apply_dividends(tr, daily, spec.get("divs"))
 
 
 def fmt(st, risk_rub):
@@ -84,7 +131,7 @@ def cmd_trend(a):
     risk_rub = C.money_limit(cfg["max_loss_per_trade"], cfg["account_size"])
     daily, monthly, spec, regime = load(a.symbol, a)
     p = params(a)
-    tr = run(daily, monthly, spec, regime, cfg, p)
+    tr = run(daily, monthly, spec, regime, cfg, p, a.since)
     st = sim.stats([t["r"] for t in tr])
     print("Тренд сверху вниз · %s · дневки %s … %s (%d дн.)%s" % (
         a.symbol, daily[0]["t"][:10], daily[-1]["t"][:10], len(daily), ", месяцы из файла" if monthly else ""))
@@ -158,7 +205,7 @@ def symbols(a):
 def cmd_universe(a):
     cfg = C.config()
     risk_rub = C.money_limit(cfg["max_loss_per_trade"], cfg["account_size"])
-    rows, all_r = [], []
+    rows, all_r, all_t = [], [], []
     for sym in symbols(a):
         a.symbol = sym
         try:
@@ -166,9 +213,10 @@ def cmd_universe(a):
         except (C.NetError, FileNotFoundError) as e:
             print("%s: %s" % (sym, e))
             continue
-        tr = run(daily, monthly, spec, regime, cfg, params(a))
+        tr = run(daily, monthly, spec, regime, cfg, params(a), a.since)
         st = sim.stats([t["r"] for t in tr])
         all_r += [t["r"] for t in tr]
+        all_t.extend(dict(t, sym=sym) for t in tr)
         rows.append([sym, st.get("trades", 0), C.pct(st.get("winrate"), 0) if st.get("trades") else "—",
                      r(st["avg_r"]) if st.get("trades") else "—", r(st["total_r"]) if st.get("trades") else "—",
                      C.rub(st.get("total_r", 0) * risk_rub, 0), r(st["max_dd_r"]) if st.get("trades") else "—"])
@@ -177,6 +225,98 @@ def cmd_universe(a):
     print(C.table(rows, ["тикер", "сделок", "прибыльных", "среднее", "итого", "≈ ₽", "просадка"]))
     tot = sim.stats(all_r)
     print("\nВсе бумаги вместе: " + fmt(tot, risk_rub))
+    if a.by_year and all_t:
+        years = sorted({t["date"][:4] for t in all_t})
+        yr = []
+        for y in years:
+            ys = sim.stats([t["r"] for t in all_t if t["date"].startswith(y)])
+            yr.append([y, ys["trades"], C.pct(ys["winrate"], 0), r(ys["avg_r"]), r(ys["total_r"]), C.rub(ys["total_r"] * risk_rub, 0)])
+        print("\nПо годам (все бумаги):")
+        print(C.table(yr, ["год", "сделок", "прибыльных", "среднее", "итого", "≈ ₽"]))
+    C.save_json(C.tpath("backtest", "trend_trades.json"), all_t)
+
+
+def key_rate_history(start="2018-12-01"):
+    import re
+    body = ('<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+            'xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>'
+            '<KeyRate xmlns="http://web.cbr.ru/"><fromDate>%s</fromDate><ToDate>%s</ToDate></KeyRate></soap:Body></soap:Envelope>'
+            % (start, C.now_msk().strftime("%Y-%m-%d"))).encode()
+    raw = C.http("https://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx", data=body,
+                 headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": "http://web.cbr.ru/KeyRate"}).decode("utf-8", "replace")
+    return sorted((d[:10], float(r.replace(",", "."))) for d, r in re.findall(r"<DT>([^<]+)</DT>\s*<Rate>([\d.,]+)</Rate>", raw))
+
+
+def cmd_portfolio(a):
+    """Один счёт: все сделки стратегии по бумагам, риск X% капитала, лимиты позиций; свободные деньги в фонде
+    денежного рынка (ключевая ставка минус 1%). Сравнение с фондом и индексом."""
+    from datetime import datetime
+    cfg = C.config()
+    tr = []
+    for sym in symbols(a):
+        try:
+            daily, monthly, spec, regime = load(sym, a)
+        except (C.NetError, FileNotFoundError):
+            continue
+        for t in run(daily, monthly, spec, regime, cfg, params(a), a.since):
+            tr.append(dict(t, sym=sym, risk_pct=abs(t["entry"] - t["stop"]) / t["entry"]))
+    tr.sort(key=lambda t: t["date"])
+    try:
+        kr = key_rate_history()
+    except C.NetError:
+        kr = [("2000-01-01", float(cfg.get("key_rate") or 0))]
+    rate_on = lambda d: next((r for x, r in reversed(kr) if x <= d), kr[0][1])
+    if a.files_dir and os.path.exists(os.path.join(a.files_dir, "IMOEX_D.csv")):
+        idx_bars = moex.load_file(os.path.join(a.files_dir, "IMOEX_D.csv"))
+    else:
+        idx_bars = moex.candles("IMOEX", "1d", days=a.days + 400, kind="index", source="iss")
+    idx = {b["t"][:10]: b["c"] for b in idx_bars}
+    start = a.since or (tr[0]["date"] if tr else min(idx))
+    days = [d for d in sorted(idx) if d >= start]
+    cap0 = float(a.capital)
+    eq, mm, open_pos, taken, skipped, prev, peak, dd = cap0, cap0, [], [], 0, None, cap0, 0.0
+    i = 0
+    for d in days:
+        if prev:
+            dt = (datetime.strptime(d, "%Y-%m-%d") - datetime.strptime(prev, "%Y-%m-%d")).days
+            y = max(0.0, rate_on(prev) - 1.0) / 100 * dt / 365
+            if not a.no_cash:
+                eq += max(0.0, eq - sum(p["capital"] for p in open_pos)) * y
+            mm *= 1 + y
+        for p in [p for p in open_pos if p["exit_date"] <= d]:
+            eq += p["pnl"]
+            open_pos.remove(p)
+        while i < len(tr) and tr[i]["date"] <= d:
+            t = tr[i]
+            i += 1
+            if len(open_pos) >= cfg["max_open_positions"] or any(p["sym"] == t["sym"] for p in open_pos):
+                skipped += 1
+                continue
+            capital = min(eq * a.risk / 100 / t["risk_pct"], eq * cfg["max_position_pct"] / 100)
+            p = dict(t, capital=capital, pnl=t["r"] * capital * t["risk_pct"])
+            open_pos.append(p)
+            taken.append(p)
+        peak = max(peak, eq)
+        dd = min(dd, eq / peak - 1)
+        prev = d
+    eq += sum(p["pnl"] for p in open_pos)
+    years = max(0.1, (datetime.strptime(days[-1], "%Y-%m-%d") - datetime.strptime(days[0], "%Y-%m-%d")).days / 365.25)
+    cagr = lambda x0, x1: ((x1 / x0) ** (1 / years) - 1) * 100
+    tp = sum(p["pnl"] for p in taken)
+    print("Счёт %s · %s … %s (%.1f лет) · бумаг %d · риск %s%% на сделку, до %d позиций по %d%% счёта" % (
+        C.rub(cap0, 0), days[0], days[-1], years, len(set(t["sym"] for t in tr)), C.num(a.risk, 1),
+        cfg["max_open_positions"], cfg["max_position_pct"]))
+    print("  стратегия%s: %s (%+.1f%% годовых), худшая просадка %s; сделок %d, пропущено из-за лимитов %d" % (
+        "" if a.no_cash else " + свободные деньги в фонде денежного рынка", C.rub(eq, 0), cagr(cap0, eq), C.pct(dd * 100, 1),
+        len(taken), skipped))
+    print("    сделки: %s, проценты фонда: %s" % (C.rub(tp, 0), C.rub(eq - cap0 - tp, 0)))
+    print("  только фонд денежного рынка (ставка ЦБ − 1%%): %s (%+.1f%% годовых)" % (C.rub(mm, 0), cagr(cap0, mm)))
+    i0, i1 = idx[days[0]], idx[days[-1]]
+    print("  индекс IMOEX (без дивидендов): %s (%+.1f%% годовых)" % (C.rub(cap0 * i1 / i0, 0), cagr(i0, i1)))
+    by = {}
+    for p in taken:
+        by[p["exit_date"][:4]] = by.get(p["exit_date"][:4], 0) + p["pnl"]
+    print("  сделки по годам: " + ", ".join("%s: %s" % (y, C.rub(v, 0)) for y, v in sorted(by.items())))
 
 
 def add_args(p, sym=True):
@@ -194,3 +334,8 @@ def add_args(p, sym=True):
     p.add_argument("--min-trades", type=int, default=8)
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--trades", action="store_true")
+    p.add_argument("--since", help="считать сделки с даты YYYY-MM-DD (история до неё — только для разгона индикаторов)")
+    p.add_argument("--by-year", action="store_true", help="разбивка результата по годам")
+    p.add_argument("--capital", type=float, default=100000)
+    p.add_argument("--risk", type=float, default=1.0, help="%% капитала риска на сделку (для trend-portfolio)")
+    p.add_argument("--no-cash", action="store_true", help="не начислять проценты фонда на свободные деньги")

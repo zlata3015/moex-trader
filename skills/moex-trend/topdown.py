@@ -139,6 +139,8 @@ def cmd_scan(a):
         except (C.NetError, FileNotFoundError) as e:
             sys.stderr.write("%s: %s\n" % (s, e))
             continue
+        if r["atr"] / r["price"] < 0.004:
+            continue   # фонды денежного рынка и облигационные фонды: почти без колебаний, это не тренд, а начисление процентов
         st = r["states"]
         verdict = ("ПОКУПКА" if r["direction"] == "long" else "ШОРТ" if r["direction"] == "short" and r["allowed"]
                    else "вниз (шорты выкл.)" if r["direction"] == "short" else "—")
@@ -148,6 +150,15 @@ def cmd_scan(a):
             ready.append(s)
     print(C.table(rows, ["тикер", "месяц", "неделя", "день", "направление", "сигнал", "цена"]))
     print("\nГотовы к входу по тренду: %s" % (", ".join(ready) if ready else "нет — это нормально, ждём сигналов"))
+    try:
+        idx = moex.candles("IMOEX", "1d", days=150, kind="index", source="iss") if not a.files_dir else \
+            moex.load_file(os.path.join(a.files_dir, "IMOEX_D.csv"))
+        e50 = ta.ema([b["c"] for b in idx], 50)[-1]
+        up = idx[-1]["c"] > e50
+        print("Индекс Мосбиржи %s %s 50-дневной средней (%s) — %s" % (C.px(idx[-1]["c"]), "выше" if up else "ниже", C.px(e50),
+              "покупки разрешены" if up else "фильтр рынка: новые покупки по умолчанию блокируются (regime_filter)"))
+    except (C.NetError, FileNotFoundError, IndexError):
+        pass
 
 
 def main():
