@@ -426,13 +426,13 @@ class TestRiskRules(unittest.TestCase):
         self.assertIn("✓", self.line(out, "стоп на день"))
 
     def test_drawdown_halves_then_pauses(self):
-        ev = [{"type": "fill", "at": "2026-10-20 12:00", "pnl": -11000, "symbol": "GAZP"}]
+        ev = [{"type": "fill", "at": "2026-10-20 12:00", "pnl": -8000, "symbol": "GAZP"}]
         env, tmp = self.prep(extra_cfg={"max_open_risk": "10%"}, events=ev)
         o = _load(os.path.join(tmp, "orders.json"))[0]
-        self.assertLessEqual(o["max_loss"], 250)   # 0,5% от 100 000 = 500, при просадке 11% — вдвое меньше
+        self.assertLessEqual(o["max_loss"], 250)   # 0,5% от 100 000 = 500, при просадке 8% — вдвое меньше
         out = self.check(env)
         self.assertIn("объём вдвое меньше", out)
-        ev2 = [{"type": "fill", "at": "2026-10-20 12:00", "pnl": -16000, "symbol": "GAZP"}]
+        ev2 = [{"type": "fill", "at": "2026-10-20 12:00", "pnl": -11000, "symbol": "GAZP"}]
         env2, _ = self.prep(events=ev2)
         out2 = self.check(env2)
         self.assertIn("ПАУЗА", out2)

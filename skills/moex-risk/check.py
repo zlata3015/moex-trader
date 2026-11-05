@@ -45,7 +45,7 @@ def check(o, cfg, now, st, offline=False):
         add((long_ and o["stop"] < o["entry"] < tgt) or (not long_ and tgt < o["entry"] < o["stop"]),
             "стоп и цель", "стоп %s, вход %s, цель %s" % (C.px(o["stop"]), C.px(o["entry"]), C.px(tgt)))
     import riskbook
-    # просадка от максимума: −10% — объём вдвое, −15% — пауза
+    # просадка от максимума: −7% — объём вдвое, −10% — пауза
     mult = st.get("dd_mult", 1.0)
     dd = st.get("drawdown", 0.0)
     add(mult > 0, "просадка", "капитал %s, максимум %s, просадка %s — %s" % (

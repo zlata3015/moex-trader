@@ -82,9 +82,9 @@ def equity(account_size):
 
 def drawdown_multiplier(cfg, dd):
     """Множитель объёма по просадке: 1 — норма, 0,5 — урезанный объём, 0 — пауза."""
-    if dd <= -float(cfg.get("dd_stop_pct", 15)) / 100:
+    if dd <= -float(cfg.get("dd_stop_pct", 10)) / 100:
         return 0.0
-    if dd <= -float(cfg.get("dd_half_pct", 10)) / 100:
+    if dd <= -float(cfg.get("dd_half_pct", 7)) / 100:
         return 0.5
     return 1.0
 
