@@ -169,7 +169,7 @@ class TestPipeline(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp()
         cls.env = {"TRADER_DIR": cls.tmp, "TINVEST_TOKEN": "dummy-token-never-printed"}
         with open(os.path.join(cls.tmp, "config.json"), "w") as f:
-            json.dump({"require_trend_alignment": False, "require_backtest": False, "require_high_rank": False, "min_reward_risk": 1.5,
+            json.dump({"require_trend_alignment": False, "require_backtest": False, "require_high_rank": False, "max_key_rate": None, "min_reward_risk": 1.5,
                        "max_loss_per_trade": 1000}, f)   # здесь проверяем механику; правила риска — в TestRiskRules
         _write_tinvest_fixtures()
 
@@ -545,6 +545,39 @@ class TestProfiles(unittest.TestCase):
         self.pick("risky", "2000-01")
         self.assertEqual(riskbook.equity(100000)[0], 91000)
 
+    def test_key_rate_rule(self):
+        import riskbook
+        old = riskbook.key_rate
+        o = self.order(direction="long", side="buy", stop=280.0, strategy="moderate")
+        cfg = C.config()
+        def run_online():
+            mod = self.risk()
+            st = {"realized_today": 0, "realized_week": 0, "open_risk": 0, "trades_today": 0, "positions": {}, "position_risk": {}}
+            return {r["check"]: r["ok"] for r in mod.check(o, dict(cfg, regime_filter=False, require_trend_alignment=False, require_high_rank=False),
+                                                           C.parse_dt(DAY + " 12:00"), st, offline=False) if r["check"] == "ключевая ставка"}
+        try:
+            riskbook.key_rate = lambda now: 14.0
+            self.assertFalse(run_online()["ключевая ставка"])
+            riskbook.key_rate = lambda now: 12.0
+            self.assertTrue(run_online()["ключевая ставка"])
+            def boom(now):
+                raise C.NetError("нет связи")
+            riskbook.key_rate = boom
+            self.assertFalse(run_online()["ключевая ставка"])
+        finally:
+            riskbook.key_rate = old
+        self.pick("risky", "2000-01")
+        self.assertIsNone(C.config()["max_key_rate"])
+
+    def test_key_rate_parsing(self):
+        import riskbook
+        old = C.http
+        C.http = lambda *a, **k: "<td>03.11.2026</td><td>14,00</td><td>28.10.2026</td><td>15,50</td>".encode()
+        try:
+            self.assertEqual(riskbook.key_rate(C.parse_dt("2026-11-05 12:00")), 14.0)
+        finally:
+            C.http = old
+
     def test_month_choice_locked_after_first_trade(self):
         now = self.month + "-15 12:00"
         ok = run("moex-setup/setup.py", "strategy", "risky", "--now", now, env={"TRADER_DIR": self.tmp})
@@ -559,7 +592,7 @@ class TestProfiles(unittest.TestCase):
 class TestRiskRules(unittest.TestCase):
     """Правила риска портфеля: позиции прошлых дней, неделя, просадка, корреляция, усреднение, стоп только вперёд."""
 
-    BASE = {"require_trend_alignment": False, "require_backtest": False, "min_reward_risk": 1.5, "regime_filter": False, "require_high_rank": False}
+    BASE = {"require_trend_alignment": False, "require_backtest": False, "min_reward_risk": 1.5, "regime_filter": False, "require_high_rank": False, "max_key_rate": None}
 
     def prep(self, extra_cfg=None, positions=None, events=None):
         tmp = tempfile.mkdtemp()

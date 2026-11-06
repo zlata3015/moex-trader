@@ -37,7 +37,7 @@ def check(o, cfg, now, st, offline=False):
         if offline:
             add(False, "офлайн", "реальная заявка без проверки данных запрещена")
         for key, name in (("regime_filter", "режим рынка"), ("require_trend_alignment", "тренд"), ("require_backtest", "бэктест"),
-                          ("require_high_rank", "рейтинг")):
+                          ("require_high_rank", "рейтинг"), ("max_key_rate", "ключевая ставка")):
             if not cfg.get(key):
                 add(False, "настройки", "для реальной заявки нельзя выключать проверку: %s (%s)" % (name, key))
     long_ = o["direction"] == "long"
@@ -216,6 +216,13 @@ def check(o, cfg, now, st, offline=False):
                 "сделка по тренду" if got == want else ("сделка ПРОТИВ тренда" if got else td["verdict"]["why"])))
         except (C.NetError, KeyError, IndexError) as e:
             add(False, "тренд", "проверка не выполнена: %s" % str(e)[:80])
+    # ключевая ставка: при высокой ставке новых покупок акций нет (N04)
+    if cfg.get("max_key_rate") and long_ and k in ("shares", "etf") and not offline:
+        try:
+            rate = riskbook.key_rate(now)
+            add(rate <= cfg["max_key_rate"], "ключевая ставка", "%s%% при пороге %s%%" % (C.num(rate, 2), cfg["max_key_rate"]))
+        except C.NetError as e:
+            add(False, "ключевая ставка", "проверка не выполнена: %s" % str(e)[:80])
     # рейтинг: новая сделка только с высоким рейтингом в её направлении
     if cfg.get("require_high_rank") and k in ("shares", "etf", "futures", "currency"):
         import rank

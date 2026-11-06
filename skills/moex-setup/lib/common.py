@@ -84,6 +84,7 @@ DEFAULT_CONFIG = {
     "require_backtest": True,        # блокировать сетапы без бэктеста или с отрицательным мат. ожиданием
     "require_trend_alignment": True, # сделка только по тренду недели и дня (месяц не против)
     "require_high_rank": True,       # новая сделка только с высоким рейтингом (lib/rank.py)
+    "max_key_rate": 12,              # покупка акций только при ключевой ставке не выше порога (N04, кандидат); None — выключено
     "trail_atr": 3.0,                # подтягиваемый стоп: экстремум с входа минус K ATR
     "max_hold_days_position": 60,    # максимум дней в позиции для торговли по тренду
     "allow_short": False,
@@ -105,7 +106,7 @@ DEFAULT_CONFIG = {
     # Дневной и недельный лимиты — предложение, Маргарита утверждает до реальных денег.
     "profiles": {"risky": {"max_loss_per_trade": "2%", "max_open_risk": "2%", "daily_loss_limit": "4%", "weekly_loss_limit": "8%",
                            "max_open_positions": 1, "max_position_pct": 200, "max_notional_mult": 2, "dd_half_pct": 20,
-                           "dd_stop_pct": 30, "allow_short": True, "allow_futures": True, "require_backtest": False}},
+                           "dd_stop_pct": 30, "max_key_rate": None, "allow_short": True, "allow_futures": True, "require_backtest": False}},
     "fund_spread_pct": 1.0,          # фонд денежного рынка: ключевая ставка минус столько п.п.
     "sessions": {
         # Время МСК. С 14.09.2026 основная сессия 09:00–19:00, утренняя 06:50–09:00, вечерняя 19:00–23:50.

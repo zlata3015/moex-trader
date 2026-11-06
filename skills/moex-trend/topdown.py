@@ -193,6 +193,15 @@ def cmd_scan(a):
             rank.log_signal(ranked[-1], sig, r["price"], r["atr"], r["date"], r["allowed"])
     print(C.table(rows, ["тикер", "месяц", "неделя", "день", "направление", "сигнал", "EMA20", "цена"]))
     print("\nГотовы к входу по тренду: %s" % (", ".join(ready) if ready else "нет — это нормально, ждём сигналов"))
+    limit = C.config().get("max_key_rate")
+    if limit and ranked:
+        import riskbook
+        try:
+            rate = riskbook.key_rate(C.now_msk())
+            if rate > limit:
+                print("\nКлючевая ставка %s%% выше порога %s%%: новых покупок акций нет, сигналы только в журнал." % (C.num(rate, 2), limit))
+        except C.NetError:
+            print("\nКлючевая ставка не получена: покупку moex-risk не пропустит.")
     held = (C.load_json(C.tpath("portfolio.json"), {}) or {}).get("positions") or {}
     for side, title in (("long", "Рейтинг на покупку"), ("short", "Рейтинг на продажу")):
         lst = sorted((x for x in ranked if x["direction"] == side), key=rank.sort_key)

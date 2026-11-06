@@ -4,6 +4,7 @@
 Источники — локальный учёт набора: trader/portfolio.json (позиции и их стопы), trader/state/broker.json
 (отправленные заявки и исполнения с результатом).
 """
+import re
 from datetime import datetime, timedelta
 
 import common as C
@@ -132,6 +133,18 @@ def correlated_group(symbol, open_pos, cfg, offline=False, now=None):
             if r is not None and r >= thr:
                 out.append((s, "корреляция %s" % C.num(r, 2)))
     return out
+
+
+def key_rate(now):
+    """Текущая ключевая ставка с сайта ЦБ. Нет данных: NetError, проверка не считается пройденной."""
+    q = {"UniDbQuery.Posted": "True", "UniDbQuery.From": (now - timedelta(days=45)).strftime("%d.%m.%Y"),
+         "UniDbQuery.To": now.strftime("%d.%m.%Y")}
+    t = C.http("https://www.cbr.ru/hd_base/KeyRate/", q).decode("utf-8")
+    rows = re.findall(r"<td[^>]*>\s*(\d\d)\.(\d\d)\.(\d{4})\s*</td>\s*<td[^>]*>\s*([\d,]+)\s*</td>", t)
+    if not rows:
+        raise C.NetError("ЦБ не вернул ключевую ставку")
+    d, m, y, v = max(rows, key=lambda r: (r[2], r[1], r[0]))
+    return float(v.replace(",", "."))
 
 
 def closing_problem(o, fact):
