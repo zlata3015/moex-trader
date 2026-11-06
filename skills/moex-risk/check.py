@@ -37,7 +37,7 @@ def check(o, cfg, now, st, offline=False):
         if offline:
             add(False, "офлайн", "реальная заявка без проверки данных запрещена")
         for key, name in (("regime_filter", "режим рынка"), ("require_trend_alignment", "тренд"), ("require_backtest", "бэктест"),
-                          ("require_high_rank", "рейтинг"), ("max_key_rate", "ключевая ставка")):
+                          ("max_key_rate", "ключевая ставка")):
             if not cfg.get(key):
                 add(False, "настройки", "для реальной заявки нельзя выключать проверку: %s (%s)" % (name, key))
     long_ = o["direction"] == "long"

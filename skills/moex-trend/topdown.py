@@ -109,7 +109,7 @@ def show(r):
                     "покупку" if d == "long" else "продажу", rk["tier"], rk["k"],
                     ", ".join(k for k, v in rk["confirm"].items() if v) or "нет", rk["a"], rk["news"],
                     " — %s" % rk["news_title"] if rk["news_title"] else ""))
-                if rk["tier"] != "высокий":
+                if rk["tier"] != "высокий" and C.config().get("require_high_rank"):
                     print("Сделку не открываем: нужен высокий рейтинг.")
             print("Предложение: вход около %s (завтра на открытии или сейчас), стоп %s (%s ATR, −%s), без цели — "
                   "подтягиваемый стоп %s ATR, держим, пока тренд жив" % (C.px(p["entry"]), C.px(p["stop"]), C.num(2, 0),
@@ -205,7 +205,7 @@ def cmd_scan(a):
     held = (C.load_json(C.tpath("portfolio.json"), {}) or {}).get("positions") or {}
     for side, title in (("long", "Рейтинг на покупку"), ("short", "Рейтинг на продажу")):
         lst = sorted((x for x in ranked if x["direction"] == side), key=rank.sort_key)
-        print("\n%s (сделка только с высоким, лимиты проверяет moex-risk):" % title)
+        print("\n%s (подсказка, сделку проверяет moex-risk):" % title)
         if side == "short" and not C.config()["allow_short"]:
             print("Шорт выключен: это учёт для рискованной стратегии, заявки не будет.")
         if lst:

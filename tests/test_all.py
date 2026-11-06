@@ -430,7 +430,7 @@ class TestRank(unittest.TestCase):
         st = {"realized_today": 0, "realized_week": 0, "open_risk": 0, "trades_today": 0, "positions": {}, "position_risk": {}}
         now = C.parse_dt(DAY + " 12:00")
         def verdict(rk, closing=False):
-            res = m.check(dict(o, rank=rk, closing=closing), dict(C.DEFAULT_CONFIG, require_backtest=False), now, st, offline=True)
+            res = m.check(dict(o, rank=rk, closing=closing), dict(C.DEFAULT_CONFIG, require_backtest=False, require_high_rank=True), now, st, offline=True)
             return {r["check"]: r["ok"] for r in res}
         high = {"tier": "высокий", "direction": "long", "k": 2, "a": 0, "news": 1}
         self.assertTrue(verdict(high)["рейтинг"])
@@ -441,7 +441,7 @@ class TestRank(unittest.TestCase):
         self.assertNotIn("рейтинг", verdict(None, closing=True))
         # рискованная стратегия: тот же запрет работает для шорта
         short = dict(o, direction="short", side="sell", stop=300.0, rank=dict(high, direction="short"))
-        cfg = dict(C.DEFAULT_CONFIG, require_backtest=False, allow_short=True)
+        cfg = dict(C.DEFAULT_CONFIG, require_backtest=False, allow_short=True, require_high_rank=True)
         res = {r["check"]: r["ok"] for r in m.check(short, cfg, now, st, offline=True)}
         self.assertTrue(res["рейтинг"]); self.assertTrue(res["шорт"])
         short["rank"] = dict(short["rank"], tier="обычный")
@@ -494,6 +494,11 @@ class TestProfiles(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("risk_prof", os.path.join(SK, "moex-risk", "check.py"))
         m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
         return m
+
+    def test_rank_is_informational_by_default(self):
+        self.assertFalse(C.config()["require_high_rank"])
+        res = self.run_check(self.order(strategy="moderate", direction="long", side="buy", stop=280.0, rank=None), C.config())
+        self.assertNotIn("рейтинг", res)
 
     def test_default_is_moderate(self):
         cfg = C.config()
