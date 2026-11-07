@@ -1222,6 +1222,16 @@ class TestPriority(unittest.TestCase):
         j = [dict(kind="bond", isin="X", symbol="Эм")]
         self.assertEqual(self.m.bond_changes({"X": "A"}, [dict(isin="X", name="Эм", rating="A-")], j), ["Эм: рейтинг A → A-"])
 
+    def test_fund_view(self):
+        bars = [dict(t="2026-10-%02d 00:00" % d, c=100 + d * .05) for d in range(1, 31)] + [dict(t="2026-11-06 00:00", c=102)]
+        pf = {"fund": "SBMM", "capital": 100000}
+        v = self.m.fund_view(pf, bars)
+        self.assertEqual(pf["fund_start"]["price"], 102)
+        self.assertAlmostEqual(v["fund_value"], 100000)
+        self.assertGreater(v["month"], 0)
+        v2 = self.m.fund_view(pf, bars + [dict(t="2026-11-09 00:00", c=103.02)])
+        self.assertAlmostEqual(v2["fund_value"], 101000)
+
     def test_exit_stop_and_time(self):
         bars = [dict(t="2026-%02d-%02d 00:00" % (1 + i // 28, 1 + i % 28), o=100, h=101, l=99, c=100) for i in range(120)]
         pos = dict(symbol="A", entry=100, stop=99.5, date=bars[100]["t"][:10], qty=1)

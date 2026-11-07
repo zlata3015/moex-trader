@@ -118,6 +118,18 @@ def auto_close(pos, bars, fee=0.0005):
     return None
 
 
+def fund_view(pf, bars):
+    """Фонд стратегии: цена, доход за 30 дней и сравнение счёта с фондом с даты старта."""
+    c = {b["t"][:10]: b["c"] for b in bars}
+    d = sorted(c)
+    last = c[d[-1]]
+    old = [k for k in d if k <= (date.fromisoformat(d[-1]) - timedelta(30)).isoformat()]
+    m = last / c[old[-1]] - 1 if old else None
+    st = pf.setdefault("fund_start", {"date": d[-1], "price": last, "capital": pf.get("capital", 100000)})
+    return {"ticker": pf["fund"], "date": d[-1], "price": last, "month": m,
+            "fund_value": st["capital"] * last / st["price"], "since": st["date"]}
+
+
 def size(cash, row, risk_pct=0.5, cap_pct=20):
     """Лот не учитывается: штук по риску и потолку доли."""
     d = row["close"] - row["stop"]
@@ -187,12 +199,18 @@ def main():
         except C.NetError:
             live.append(p)
             exits.append({"symbol": p["symbol"], "action": "данных нет, проверить вручную", "sell": [], "warn": []})
+    fund = None
+    if pf.get("fund"):
+        try:
+            fund = fund_view(pf, [x for x in moex.candles(pf["fund"], "1d", days=60, source="iss") if x["t"][:10] <= cut])
+        except (C.NetError, KeyError, IndexError):
+            fund = None
     pf["positions"] = live
     pf["closed"] = pf.get("closed", []) + done
     with open(a.portfolio, "w", encoding="utf-8") as f:
         json.dump(pf, f, ensure_ascii=False, indent=1)
     res = dict(day=ix["date"], strategy=pf["strategy"], rate=rate, market=ix["dir"], checked=len(rows), failed=bad, priority=pri, today=today,
-               moderate_ok=bool(moderate_ok), exits=exits, closed=done, cash=pf.get("cash"), removed=removed, journal_size=len(journal))
+               moderate_ok=bool(moderate_ok), exits=exits, closed=done, cash=pf.get("cash"), fund=fund, equity=pf.get("cash", 0) + sum(e.get("close", 0) * e.get("qty", 0) for e in exits), removed=removed, journal_size=len(journal))
     try:
         res["h10"] = P.h10(ix, cut)
     except (C.NetError, KeyError, IndexError, ValueError, TypeError) as e:
@@ -252,7 +270,13 @@ def render(res, journal):
          "Сигналы на покупку: %s" % (", ".join(r["symbol"] for r in sig) or "нет"),
          "Купить сегодня: %s" % (", ".join(r["symbol"] for r in sig) if sig and ok else "ничего" + (", " + why if sig and not ok else "")),
          "Портфель: %s" % ("пуст" if not ex else "%d поз., держим: %s" % (len(ex), ", ".join(e["symbol"] for e in ex))),
-         "Закрыто автоматически: %s" % (", ".join(c["symbol"] for c in res.get("closed", [])) or "ничего"), "",
+         "Закрыто автоматически: %s" % (", ".join(c["symbol"] for c in res.get("closed", [])) or "ничего")]
+    fd = res.get("fund")
+    if fd:
+        L.append("Фонд %s: свободные деньги держим в нём. Цена %s, за 30 дней %s" % (
+            fd["ticker"], C.px(fd["price"]), "%+.2f%% (%.1f%% годовых)" % (fd["month"] * 100, ((1 + fd["month"]) ** (365 / 30) - 1) * 100) if fd["month"] is not None else "н/д"))
+        L.append("Счёт %s ₽, а если бы всё лежало в фонде с %s: %s ₽" % (C.px(res.get("equity") or 0), fd["since"], C.px(fd["fund_value"])))
+    L += ["",
          "СИГНАЛЫ НА ПОКУПКУ"]
     if not sig:
         L.append("сегодня сделки нет")
