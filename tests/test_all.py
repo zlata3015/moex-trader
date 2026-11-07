@@ -1146,5 +1146,90 @@ class TestSplits(unittest.TestCase):
         self.assertEqual(out[2]["o"], 713)
 
 
+class TestPriority(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, os.path.join(SK, "moex-trend"))
+        import morning
+        import priority
+        cls.p, cls.m = priority, morning
+
+    def test_market_dir(self):
+        self.assertEqual(self.p.market_dir([100 + i for i in range(80)]), 1)
+        self.assertEqual(self.p.market_dir([200 - i for i in range(80)]), -1)
+
+    def test_priority_needs_rsi_band(self):
+        self.assertFalse(self.p.priority_flags([100 + i for i in range(80)], 0)[0])   # RSI 100
+        wave = [100 + i * .3 + 3 * ((i % 6) - 2.5) for i in range(90)]
+        b, s, rs = self.p.priority_flags(wave, 0)
+        self.assertFalse(s)
+        self.assertGreater(rs, 0)
+
+    def test_h10_breakout_both_sides(self):
+        up = [dict(o=100 + i, h=101 + i, l=99 + i, c=100.5 + i) for i in range(80)]
+        self.assertEqual(self.p.h10_side(up), 1)
+        dn = [dict(o=300 - i, h=301 - i, l=299 - i, c=299.5 - i) for i in range(80)]
+        self.assertEqual(self.p.h10_side(dn), -1)
+        self.assertEqual(self.p.h10_side(up[:50]), 0)
+
+    def test_closed_day(self):
+        from datetime import datetime
+        self.assertEqual(self.p.closed_day(datetime(2026, 11, 6, 10, 0)), "2026-11-05")
+        self.assertEqual(self.p.closed_day(datetime(2026, 11, 6, 20, 0)), "2026-11-06")
+
+    def test_journal_keeps_month_and_dedupes(self):
+        from datetime import date
+        old = [dict(date="2026-10-01", symbol="A"), dict(date="2026-10-20", symbol="B")]
+        row = dict(symbol="C", close=10, rs=.1, signal="", stop=9)
+        j, rm = self.m.update_journal(old, [row], "2026-11-05", date(2026, 11, 6))
+        self.assertEqual(rm, 1)
+        self.assertEqual([r["symbol"] for r in j], ["B", "C"])
+        j2, _ = self.m.update_journal(j, [row], "2026-11-05", date(2026, 11, 6))
+        self.assertEqual(len(j2), 2)
+
+    def test_render_blocks_buy_above_rate(self):
+        base = dict(day="2026-11-05", strategy="moderate", rate=14.0, market=1, moderate_ok=False, exits=[], credit={})
+        sig = dict(symbol="A", signal="откат", close=10, stop=9, qty=5, rs=.1)
+        t = self.m.render(dict(base, today=[sig], priority=[sig]), [])
+        self.assertIn("Купить сегодня: ничего, ключевая ставка 14.0% выше порога 12%", t)
+        self.assertIn("Портфель: пуст", t)
+        self.assertIn("Закрыто автоматически: ничего", t)
+        t = self.m.render(dict(base, moderate_ok=True, rate=11.0, today=[sig], priority=[sig]), [])
+        self.assertIn("Купить сегодня: A", t)
+
+    def test_auto_close(self):
+        days = ["2026-%02d-%02d 00:00" % (1 + i // 28, 1 + i % 28) for i in range(100)]
+        bars = [dict(t=t, o=100, h=101, l=99, c=100) for t in days]
+        pos = dict(symbol="A", entry=100, stop=90, date=days[90][:10], qty=2)
+        self.assertIsNone(self.m.auto_close(pos, bars))
+        gap = bars[:95] + [dict(t=days[95], o=80, h=82, l=79, c=81)] + bars[96:]
+        c = self.m.auto_close(pos, gap)
+        self.assertEqual((c["why"], c["exit"], c["exit_date"]), ("стоп", 80, days[95][:10]))
+        long_ = dict(pos, date=days[10][:10])
+        self.assertEqual(self.m.auto_close(long_, bars)["why"], "60 дней")
+
+    def test_bond_selection(self):
+        import credit
+        from datetime import date
+        ok = dict(isin="X", name="Эм 1Р1", years=3, ytm=18, rating="A", spread=300, volume=20, duration=2.5, price=99, maturity="01.01.29", offer="-")
+        today = date(2026, 11, 6)
+        self.assertTrue(credit.bond_ok(ok, today))
+        for bad in (dict(rating="BBB+"), dict(rating=None), dict(duration=.5), dict(spread=50), dict(spread=1500), dict(volume=1), dict(offer="01.01.27")):
+            self.assertFalse(credit.bond_ok(dict(ok, **bad), today), bad)
+        self.assertEqual(len(credit.bond_pick([ok, dict(ok, isin="Y", name="Эм 1Р2", spread=200)], today)), 1)
+
+    def test_bond_rating_change(self):
+        j = [dict(kind="bond", isin="X", symbol="Эм")]
+        self.assertEqual(self.m.bond_changes({"X": "A"}, [dict(isin="X", name="Эм", rating="A-")], j), ["Эм: рейтинг A → A-"])
+
+    def test_exit_stop_and_time(self):
+        bars = [dict(t="2026-%02d-%02d 00:00" % (1 + i // 28, 1 + i % 28), o=100, h=101, l=99, c=100) for i in range(120)]
+        pos = dict(symbol="A", entry=100, stop=99.5, date=bars[100]["t"][:10], qty=1)
+        self.assertEqual(self.m.exit_view(pos, bars, "x")["action"], "ПРОДАТЬ")
+        pos2 = dict(pos, stop=80, date=bars[110]["t"][:10])
+        v = self.m.exit_view(pos2, [dict(b, l=98.5) for b in bars], "x")
+        self.assertTrue(v["stop"] >= 80)
+
+
 if __name__ == "__main__":
     unittest.main()
